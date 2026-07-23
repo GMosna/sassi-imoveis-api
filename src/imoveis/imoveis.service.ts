@@ -6,6 +6,7 @@ export interface FiltroImoveis {
   tipo?: string;
   dormitorios?: number;
   valorMax?: number;
+  vagasMin?: number;
 }
 
 const IMOVEIS_MOCK = [
@@ -101,6 +102,7 @@ export class ImoveisService implements OnModuleDestroy {
       if (filtro.tipo && !im.tipo.toLowerCase().includes(filtro.tipo.toLowerCase())) return false;
       if (filtro.dormitorios !== undefined && im.dormitorios !== filtro.dormitorios) return false;
       if (filtro.valorMax !== undefined && im.valor_locacao > filtro.valorMax) return false;
+      if (filtro.vagasMin !== undefined && im.vagas_garagem < filtro.vagasMin) return false;
       return true;
     });
   }
@@ -125,11 +127,13 @@ export class ImoveisService implements OnModuleDestroy {
       condicoesExtras.push(`quadro.aluguel <= ?`);
       valores.push(filtro.valorMax);
     }
+    if (filtro.vagasMin !== undefined) {
+      condicoesExtras.push(`quadro.numero_vagas_garagem >= ?`);
+      valores.push(filtro.vagasMin);
+    }
 
     const extra = condicoesExtras.length ? `AND ${condicoesExtras.join(' AND ')}` : '';
 
-    // Query base fornecida pelo Reginaldo (mesma lógica usada no site),
-    // com os filtros do agente adicionados como condições extras no WHERE.
     const query = `
       SELECT
         quadro.seq_quadro,

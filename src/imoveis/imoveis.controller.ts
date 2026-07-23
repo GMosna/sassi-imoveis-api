@@ -19,6 +19,7 @@ export class ImoveisController {
     @Query('tipo') tipo?: string,
     @Query('dormitorios') dormitorios?: string,
     @Query('valor_max') valorMax?: string,
+    @Query('vagas_min') vagasMin?: string,
   ) {
     this.validarToken(authHeader);
 
@@ -32,11 +33,17 @@ export class ImoveisController {
       throw new BadRequestException('valor_max precisa ser um número');
     }
 
+    const vagasMinNum = vagasMin ? Number(vagasMin) : undefined;
+    if (vagasMin !== undefined && Number.isNaN(vagasMinNum)) {
+      throw new BadRequestException('vagas_min precisa ser um número');
+    }
+
     const resultados = await this.imoveisService.buscar({
       bairro,
       tipo,
       dormitorios: dormitoriosNum,
       valorMax: valorMaxNum,
+      vagasMin: vagasMinNum,
     });
 
     return { resultados };
@@ -45,7 +52,6 @@ export class ImoveisController {
   private validarToken(authHeader: string | undefined) {
     const tokenEsperado = process.env.API_TOKEN;
     if (!tokenEsperado) {
-      // trava por segurança: sem token configurado, nada responde
       throw new UnauthorizedException('API_TOKEN não configurado no servidor');
     }
     const tokenRecebido = authHeader?.replace('Bearer ', '');
