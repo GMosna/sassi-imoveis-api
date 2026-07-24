@@ -5,11 +5,14 @@ import {
   Headers,
   UnauthorizedException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { ImoveisService } from './imoveis.service';
 
 @Controller('imoveis-disponiveis')
 export class ImoveisController {
+  private readonly logger = new Logger(ImoveisController.name);
+
   constructor(private readonly imoveisService: ImoveisService) {}
 
   @Get()
@@ -21,6 +24,10 @@ export class ImoveisController {
     @Query('valor_max') valorMax?: string,
     @Query('vagas_min') vagasMin?: string,
   ) {
+    this.logger.log(
+      `Requisição recebida — bairro=${bairro} tipo=${tipo} dormitorios=${dormitorios} valor_max=${valorMax} vagas_min=${vagasMin} temToken=${!!authHeader}`,
+    );
+
     this.validarToken(authHeader);
 
     const dormitoriosNum = dormitorios ? Number(dormitorios) : undefined;
@@ -52,10 +59,12 @@ export class ImoveisController {
   private validarToken(authHeader: string | undefined) {
     const tokenEsperado = process.env.API_TOKEN;
     if (!tokenEsperado) {
+      this.logger.warn('API_TOKEN não configurado no servidor');
       throw new UnauthorizedException('API_TOKEN não configurado no servidor');
     }
     const tokenRecebido = authHeader?.replace('Bearer ', '');
     if (tokenRecebido !== tokenEsperado) {
+      this.logger.warn(`Token inválido recebido: "${authHeader}"`);
       throw new UnauthorizedException('Token inválido');
     }
   }
