@@ -18,17 +18,29 @@ export class ImoveisController {
   @Get()
   async buscar(
     @Headers('authorization') authHeader: string,
-    @Query('bairro') bairro?: string,
-    @Query('tipo') tipo?: string,
-    @Query('dormitorios') dormitorios?: string,
-    @Query('valor_max') valorMax?: string,
-    @Query('vagas_min') vagasMin?: string,
+    @Headers('x-api-token') xApiToken: string | undefined,
+    @Headers('x-bairro') xBairro: string | undefined,
+    @Headers('x-tipo') xTipo: string | undefined,
+    @Headers('x-dormitorios') xDormitorios: string | undefined,
+    @Headers('x-valor-max') xValorMax: string | undefined,
+    @Headers('x-vagas-min') xVagasMin: string | undefined,
+    @Query('bairro') qBairro?: string,
+    @Query('tipo') qTipo?: string,
+    @Query('dormitorios') qDormitorios?: string,
+    @Query('valor_max') qValorMax?: string,
+    @Query('vagas_min') qVagasMin?: string,
   ) {
+    const bairro = xBairro || qBairro;
+    const tipo = xTipo || qTipo;
+    const dormitorios = xDormitorios || qDormitorios;
+    const valorMax = xValorMax || qValorMax;
+    const vagasMin = xVagasMin || qVagasMin;
+
     this.logger.log(
-      `Requisição recebida — bairro=${bairro} tipo=${tipo} dormitorios=${dormitorios} valor_max=${valorMax} vagas_min=${vagasMin} temToken=${!!authHeader}`,
+      `Requisição recebida — bairro=${bairro} tipo=${tipo} dormitorios=${dormitorios} valor_max=${valorMax} vagas_min=${vagasMin} temToken=${!!(authHeader || xApiToken)} origem=${xBairro || xTipo ? 'headers' : 'query'}`,
     );
 
-    this.validarToken(authHeader);
+    this.validarToken(authHeader, xApiToken);
 
     const dormitoriosNum = dormitorios ? Number(dormitorios) : undefined;
     if (dormitorios !== undefined && Number.isNaN(dormitoriosNum)) {
@@ -56,15 +68,15 @@ export class ImoveisController {
     return { resultados };
   }
 
-  private validarToken(authHeader: string | undefined) {
+  private validarToken(authHeader: string | undefined, xApiToken: string | undefined) {
     const tokenEsperado = process.env.API_TOKEN;
     if (!tokenEsperado) {
       this.logger.warn('API_TOKEN não configurado no servidor');
       throw new UnauthorizedException('API_TOKEN não configurado no servidor');
     }
-    const tokenRecebido = authHeader?.replace('Bearer ', '');
+    const tokenRecebido = xApiToken ?? authHeader?.replace('Bearer ', '');
     if (tokenRecebido !== tokenEsperado) {
-      this.logger.warn(`Token inválido recebido: "${authHeader}"`);
+      this.logger.warn(`Token inválido recebido: "${xApiToken ?? authHeader}"`);
       throw new UnauthorizedException('Token inválido');
     }
   }
