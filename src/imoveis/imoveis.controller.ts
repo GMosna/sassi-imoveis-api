@@ -28,6 +28,7 @@ export class ImoveisController {
     @Query('dormitorios') qDormitorios?: string,
     @Query('valor_max') qValorMax?: string,
     @Query('vagas_min') qVagasMin?: string,
+    @Query('token') qToken?: string,
   ) {
     // Aceita os critérios tanto por query string quanto por header customizado
     // (headers X-* foram adicionados porque a plataforma RD Station remove
@@ -42,7 +43,7 @@ export class ImoveisController {
       `Requisição recebida — bairro=${bairro} tipo=${tipo} dormitorios=${dormitorios} valor_max=${valorMax} vagas_min=${vagasMin} temToken=${!!authHeader} origem=${xBairro || xTipo ? 'headers' : 'query'}`,
     );
 
-    this.validarToken(authHeader, xApiToken);
+    this.validarToken(authHeader, xApiToken, qToken);
 
     // Extrai o primeiro número de um texto livre (ex: "até 2500", "uns 2 mil",
     // "R$ 2.500,00") em vez de exigir que o campo seja só um número puro —
@@ -69,20 +70,22 @@ export class ImoveisController {
     return { resultados };
   }
 
-  private validarToken(authHeader: string | undefined, xApiToken: string | undefined) {
+  private validarToken(authHeader: string | undefined, xApiToken: string | undefined, qToken: string | undefined) {
     const tokenEsperado = process.env.API_TOKEN;
     if (!tokenEsperado) {
       // trava por segurança: sem token configurado, nada responde
       this.logger.warn('API_TOKEN não configurado no servidor');
       throw new UnauthorizedException('API_TOKEN não configurado no servidor');
     }
-    // Aceita o token tanto via "Authorization: Bearer ..." quanto via
-    // header customizado "X-Api-Token" (usado porque o campo dedicado de
-    // token da plataforma RD Station não persiste ao salvar a Habilidade)
+    // Aceita o token via "Authorization: Bearer ...", header customizado
+    // "X-Api-Token", ou query string "?token=..." — múltiplos caminhos porque
+    // diferentes editores da plataforma RD Station persistem campos de forma
+    // inconsistente (o campo de token dedicado e headers estáticos misturados
+    // com dinâmicos não persistiam de forma confiável nos testes).
     const tokenViaAuth = authHeader?.replace('Bearer ', '');
-    const tokenRecebido = xApiToken || tokenViaAuth;
+    const tokenRecebido = qToken || xApiToken || tokenViaAuth;
     if (tokenRecebido !== tokenEsperado) {
-      this.logger.warn(`Token inválido recebido: authorization="${authHeader}" x-api-token="${xApiToken}"`);
+      this.logger.warn(`Token inválido recebido: authorization="${authHeader}" x-api-token="${xApiToken}" query-token="${qToken}"`);
       throw new UnauthorizedException('Token inválido');
     }
   }
