@@ -30,9 +30,6 @@ export class ImoveisController {
     @Query('vagas_min') qVagasMin?: string,
     @Query('token') qToken?: string,
   ) {
-    // Aceita os critérios tanto por query string quanto por header customizado
-    // (headers X-* foram adicionados porque a plataforma RD Station remove
-    // query strings ao salvar a Habilidade, mas preserva headers customizados)
     const bairro = xBairro || qBairro;
     const tipo = xTipo || qTipo;
     const dormitorios = xDormitorios || qDormitorios;
@@ -45,10 +42,6 @@ export class ImoveisController {
 
     this.validarToken(authHeader, xApiToken, qToken);
 
-    // Extrai o primeiro número de um texto livre (ex: "até 2500", "uns 2 mil",
-    // "R$ 2.500,00") em vez de exigir que o campo seja só um número puro —
-    // necessário porque as respostas vêm de perguntas abertas no fluxo,
-    // e o cliente pode responder de formas variadas.
     const extrairNumero = (texto: string | undefined): number | undefined => {
       if (!texto) return undefined;
       const match = texto.replace(/\./g, '').match(/\d+/);
@@ -67,21 +60,58 @@ export class ImoveisController {
       vagasMin: vagasMinNum,
     });
 
-    return { resultados };
+    const mensagem = this.formatarMensagem(resultados);
+
+    return { mensagem, resultados };
+  }
+
+  private formatarMensagem(resultados: any[]): string {
+    if (!resultados || resultados.length === 0) {
+      return 'No momento não encontrei nenhum imóvel disponível com esse perfil. Posso registrar seus critérios de busca para que nossa equipe entre em contato assim que surgirem opções?';
+    }
+
+    const formatarValor = (valor: number | undefined) =>
+      valor !== undefined && valor !== null
+        ? valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : undefined;
+
+    const itens = resultados.slice(0, 3).map((im) => {
+      const linhas: string[] = [];
+      linhas.push(`🏡 *Código*: ${im.codigo}`);
+      linhas.push(`*${im.tipo}* em ${im.bairro}`);
+      linhas.push('');
+      if (im.valor_locacao !== undefined) {
+        linhas.push(`*Aluguel*: R$ ${formatarValor(im.valor_locacao)}`);
+      }
+      const detalhes: string[] = [];
+      if (im.dormitorios) detalhes.push(`*Quartos*: ${im.dormitorios}`);
+      if (im.vagas_garagem) detalhes.push(`*Vagas*: ${im.vagas_garagem}`);
+      if (im.metragem) detalhes.push(`${im.metragem}m²`);
+      if (detalhes.length) linhas.push(detalhes.join(' · '));
+      linhas.push('');
+      linhas.push('_Os valores estão sujeitos a alterações._');
+      if (im.link) {
+        linhas.push('');
+        linhas.push(`🔗 ${im.link}`);
+      }
+      return linhas.join('\n');
+    });
+
+    const corpo = itens.join('\n\n---\n\n');
+    const fechamento =
+      resultados.length > 3
+        ? `\n\n*Encontrei mais opções além dessas 3 — quer que eu envie mais, ou posso ajudar a agendar uma visita em alguma dessas?*`
+        : `\n\n*Gostou de alguma dessas opções, ou quer que eu envie mais?* 😊`;
+
+    return corpo + fechamento;
   }
 
   private validarToken(authHeader: string | undefined, xApiToken: string | undefined, qToken: string | undefined) {
     const tokenEsperado = process.env.API_TOKEN;
     if (!tokenEsperado) {
-      // trava por segurança: sem token configurado, nada responde
       this.logger.warn('API_TOKEN não configurado no servidor');
       throw new UnauthorizedException('API_TOKEN não configurado no servidor');
     }
-    // Aceita o token via "Authorization: Bearer ...", header customizado
-    // "X-Api-Token", ou query string "?token=..." — múltiplos caminhos porque
-    // diferentes editores da plataforma RD Station persistem campos de forma
-    // inconsistente (o campo de token dedicado e headers estáticos misturados
-    // com dinâmicos não persistiam de forma confiável nos testes).
     const tokenViaAuth = authHeader?.replace('Bearer ', '');
     const tokenRecebido = qToken || xApiToken || tokenViaAuth;
     if (tokenRecebido !== tokenEsperado) {
