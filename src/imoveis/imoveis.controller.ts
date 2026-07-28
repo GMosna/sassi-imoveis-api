@@ -23,21 +23,24 @@ export class ImoveisController {
     @Headers('x-dormitorios') xDormitorios: string | undefined,
     @Headers('x-valor-max') xValorMax: string | undefined,
     @Headers('x-vagas-min') xVagasMin: string | undefined,
+    @Headers('x-offset') xOffset: string | undefined,
     @Query('bairro') qBairro?: string,
     @Query('tipo') qTipo?: string,
     @Query('dormitorios') qDormitorios?: string,
     @Query('valor_max') qValorMax?: string,
     @Query('vagas_min') qVagasMin?: string,
     @Query('token') qToken?: string,
+    @Query('offset') qOffset?: string,
   ) {
     const bairro = xBairro || qBairro;
     const tipo = xTipo || qTipo;
     const dormitorios = xDormitorios || qDormitorios;
     const valorMax = xValorMax || qValorMax;
     const vagasMin = xVagasMin || qVagasMin;
+    const offset = xOffset || qOffset;
 
     this.logger.log(
-      `Requisição recebida — bairro=${bairro} tipo=${tipo} dormitorios=${dormitorios} valor_max=${valorMax} vagas_min=${vagasMin} temToken=${!!authHeader} origem=${xBairro || xTipo ? 'headers' : 'query'}`,
+      `Requisição recebida — bairro=${bairro} tipo=${tipo} dormitorios=${dormitorios} valor_max=${valorMax} vagas_min=${vagasMin} offset=${offset} temToken=${!!authHeader} origem=${xBairro || xTipo ? 'headers' : 'query'}`,
     );
 
     this.validarToken(authHeader, xApiToken, qToken);
@@ -51,8 +54,9 @@ export class ImoveisController {
     const dormitoriosNum = extrairNumero(dormitorios);
     const valorMaxNum = extrairNumero(valorMax);
     const vagasMinNum = extrairNumero(vagasMin);
+    const offsetNum = extrairNumero(offset) ?? 0;
 
-    const resultados = await this.imoveisService.buscar({
+    const todos = await this.imoveisService.buscar({
       bairro,
       tipo,
       dormitorios: dormitoriosNum,
@@ -60,12 +64,15 @@ export class ImoveisController {
       vagasMin: vagasMinNum,
     });
 
-    const mensagem = this.formatarMensagem(resultados);
+    const resultados = todos.slice(offsetNum, offsetNum + 3);
+    const temMais = todos.length > offsetNum + 3;
 
-    return { mensagem, resultados };
+    const mensagem = this.formatarMensagem(resultados, temMais);
+
+    return { mensagem, resultados, temMais };
   }
 
-  private formatarMensagem(resultados: any[]): string {
+  private formatarMensagem(resultados: any[], temMais: boolean): string {
     if (!resultados || resultados.length === 0) {
       return 'No momento não encontrei nenhum imóvel disponível com esse perfil. Posso registrar seus critérios de busca para que nossa equipe entre em contato assim que surgirem opções?';
     }
@@ -75,7 +82,7 @@ export class ImoveisController {
         ? valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
         : undefined;
 
-    const itens = resultados.slice(0, 3).map((im) => {
+    const itens = resultados.map((im) => {
       const linhas: string[] = [];
       linhas.push(`🏡 *Código*: ${im.codigo}`);
       linhas.push(`*${im.tipo}* em ${im.bairro}`);
@@ -90,6 +97,10 @@ export class ImoveisController {
       if (detalhes.length) linhas.push(detalhes.join(' · '));
       linhas.push('');
       linhas.push('_Os valores estão sujeitos a alterações._');
+      if (im.foto) {
+        linhas.push('');
+        linhas.push(`📷 ${im.foto}`);
+      }
       if (im.link) {
         linhas.push('');
         linhas.push(`🔗 ${im.link}`);
@@ -98,10 +109,9 @@ export class ImoveisController {
     });
 
     const corpo = itens.join('\n\n---\n\n');
-    const fechamento =
-      resultados.length > 3
-        ? `\n\n*Encontrei mais opções além dessas 3 — quer que eu envie mais, ou posso ajudar a agendar uma visita em alguma dessas?*`
-        : `\n\n*Gostou de alguma dessas opções, ou quer que eu envie mais?* 😊`;
+    const fechamento = temMais
+      ? `\n\n*Gostou de alguma dessas opções, ou quer que eu envie mais 3?*`
+      : `\n\n*Gostou de alguma dessas opções?*`;
 
     return corpo + fechamento;
   }

@@ -11,6 +11,7 @@ export interface Imovel {
   vagas_garagem: number | null;
   metragem: number | null;
   link: string;
+  foto?: string;
 }
 
 @Injectable()
@@ -112,7 +113,14 @@ export class ScraperService implements OnModuleInit {
           if (alt === 'Metragem') metragem = parseBRNumber(val) || null;
         });
 
-      return { codigo, tipo, bairro, valor_locacao, dormitorios, vagas_garagem, metragem, link };
+      const fotoStyle = $(card).find('div.imovelFoto').first().attr('style') ?? '';
+      const fotoMatch = fotoStyle.match(/url\(([^)]+)\)/);
+      const fotoPath = fotoMatch ? fotoMatch[1] : null;
+      const foto = fotoPath
+        ? (fotoPath.startsWith('http') ? fotoPath : `https://sassiimoveis.com.br${fotoPath}`)
+        : undefined;
+
+      return { codigo, tipo, bairro, valor_locacao, dormitorios, vagas_garagem, metragem, link, foto };
     } catch (err) {
       this.logger.warn(`Erro ao extrair card: ${err}`);
       return null;
