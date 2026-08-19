@@ -68,8 +68,9 @@ export class ImoveisController {
     const temMais = todos.length > offsetNum + 3;
 
     const mensagem = this.formatarMensagem(resultados, temMais);
+    const mensagens = this.formatarMensagens(resultados, temMais);
 
-    return { mensagem, resultados, temMais };
+    return { mensagem, mensagens, resultados, temMais };
   }
 
   private formatarMensagem(resultados: any[], temMais: boolean): string {
@@ -115,6 +116,50 @@ export class ImoveisController {
       : `\n\n*Gostou de alguma dessas opções?*`;
 
     return corpo + fechamento;
+  }
+
+  private formatarMensagens(resultados: any[], temMais: boolean): string[] {
+    if (!resultados || resultados.length === 0) {
+      return ['No momento não encontrei nenhum imóvel disponível com esse perfil. Posso registrar seus critérios de busca para que nossa equipe entre em contato assim que surgirem opções?'];
+    }
+
+    const formatarValor = (valor: number | undefined) =>
+      valor !== undefined && valor !== null
+        ? valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : undefined;
+
+    const mensagens: string[] = resultados.map((im) => {
+      const linhas: string[] = [];
+      linhas.push(`🏡 *Código*: ${im.codigo}`);
+      linhas.push(`*${im.tipo}* em ${im.bairro}`);
+      linhas.push('');
+      if (im.valor_locacao !== undefined) {
+        linhas.push(`*Aluguel*: R$ ${formatarValor(im.valor_locacao)}`);
+      }
+      const detalhes: string[] = [];
+      if (im.dormitorios != null) detalhes.push(`*Quartos*: ${im.dormitorios}`);
+      else detalhes.push(`*Quartos*: não informado`);
+      if (im.vagas_garagem) detalhes.push(`*Vagas*: ${im.vagas_garagem}`);
+      if (im.metragem) detalhes.push(`${im.metragem}m²`);
+      if (detalhes.length) linhas.push(detalhes.join(' · '));
+      linhas.push('');
+      linhas.push('_Os valores estão sujeitos a alterações._');
+      if (im.foto) {
+        linhas.push('');
+        linhas.push(`📷 ${im.foto}`);
+      }
+      if (im.link) {
+        linhas.push('');
+        linhas.push(`🔗 ${im.link}`);
+      }
+      return linhas.join('\n');
+    });
+
+    mensagens.push(temMais
+      ? '*Gostou de alguma dessas opções, ou quer que eu envie mais 3?*'
+      : '*Gostou de alguma dessas opções?*');
+
+    return mensagens;
   }
 
   private validarToken(authHeader: string | undefined, xApiToken: string | undefined, qToken: string | undefined) {
