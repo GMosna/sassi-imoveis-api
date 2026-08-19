@@ -91,7 +91,8 @@ export class ImoveisController {
         linhas.push(`*Aluguel*: R$ ${formatarValor(im.valor_locacao)}`);
       }
       const detalhes: string[] = [];
-      if (im.dormitorios) detalhes.push(`*Quartos*: ${im.dormitorios}`);
+      if (im.dormitorios != null) detalhes.push(`*Quartos*: ${im.dormitorios}`);
+      else detalhes.push(`*Quartos*: não informado`);
       if (im.vagas_garagem) detalhes.push(`*Vagas*: ${im.vagas_garagem}`);
       if (im.metragem) detalhes.push(`${im.metragem}m²`);
       if (detalhes.length) linhas.push(detalhes.join(' · '));

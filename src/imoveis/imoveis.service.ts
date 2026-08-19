@@ -13,6 +13,18 @@ function norm(s: string): string {
   return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 }
 
+const TIPO_SINONIMOS: Record<string, string> = {
+  'apto': 'apartamento',
+  'ap': 'apartamento',
+  'casa cond': 'casa em condominio',
+  'cond': 'casa em condominio',
+};
+
+function normTipo(s: string): string {
+  const n = norm(s).trim();
+  return TIPO_SINONIMOS[n] ?? n;
+}
+
 const IMOVEIS_MOCK = [
   {
     codigo: 1001,
@@ -67,8 +79,8 @@ export class ImoveisService {
   private buscarMock(filtro: FiltroImoveis) {
     return IMOVEIS_MOCK.filter((im) => {
       if (filtro.bairro && !norm(im.bairro).includes(norm(filtro.bairro))) return false;
-      if (filtro.tipo && !norm(im.tipo).includes(norm(filtro.tipo))) return false;
-      if (filtro.dormitorios !== undefined && im.dormitorios !== filtro.dormitorios) return false;
+      if (filtro.tipo && !norm(im.tipo).includes(normTipo(filtro.tipo))) return false;
+      if (filtro.dormitorios !== undefined && (im.dormitorios === null || im.dormitorios < filtro.dormitorios)) return false;
       if (filtro.valorMax !== undefined && im.valor_locacao > filtro.valorMax) return false;
       if (filtro.vagasMin !== undefined && (im.vagas_garagem === null || im.vagas_garagem < filtro.vagasMin)) return false;
       return true;
@@ -82,10 +94,10 @@ export class ImoveisService {
       imoveis = imoveis.filter((im) => norm(im.bairro).includes(norm(filtro.bairro!)));
     }
     if (filtro.tipo) {
-      imoveis = imoveis.filter((im) => norm(im.tipo).includes(norm(filtro.tipo!)));
+      imoveis = imoveis.filter((im) => norm(im.tipo).includes(normTipo(filtro.tipo!)));
     }
     if (filtro.dormitorios !== undefined) {
-      imoveis = imoveis.filter((im) => im.dormitorios === filtro.dormitorios);
+      imoveis = imoveis.filter((im) => im.dormitorios !== null && im.dormitorios >= filtro.dormitorios!);
     }
     if (filtro.valorMax !== undefined) {
       imoveis = imoveis.filter((im) => im.valor_locacao <= filtro.valorMax!);
