@@ -82,7 +82,7 @@ export class ScraperService implements OnModuleInit {
   private extrairCard($: cheerio.CheerioAPI, card: any): Imovel | null {
     try {
       const selo = $(card).find('div.selo').text().trim().toLowerCase();
-      if (selo.includes('reservado') || selo.includes('em breve')) return null;
+      if (selo.includes('reservado')) return null;
 
       const h2Text = $(card).find('a[href^="/imovel-aluguel"] h2').first().text().trim();
       const partes = h2Text.split('|').map((s) => s.trim());
