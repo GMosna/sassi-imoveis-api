@@ -16,6 +16,7 @@ function norm(s: string): string {
 const TIPO_SINONIMOS: Record<string, string> = {
   'apto': 'apartamento',
   'ap': 'apartamento',
+  'kitnet': 'kitinet',
   'casa cond': 'casa em condominio',
   'cond': 'casa em condominio',
 };
@@ -23,6 +24,25 @@ const TIPO_SINONIMOS: Record<string, string> = {
 function normTipo(s: string): string {
   const n = norm(s).trim();
   return TIPO_SINONIMOS[n] ?? n;
+}
+
+const BAIRRO_ABREV: [RegExp, string][] = [
+  [/\bjardim\b/g, 'jd.'],
+  [/\bjd(?!\.)\b/g, 'jd.'],
+  [/\bparque\b/g, 'pq.'],
+  [/\bpq(?!\.)\b/g, 'pq.'],
+  [/\bcondominio\b/g, 'cond.'],
+  [/\bcond(?!\.)\b/g, 'cond.'],
+  [/\bresidencial\b/g, 'resid.'],
+  [/\bresid(?!\.)\b/g, 'resid.'],
+];
+
+function normBairro(s: string): string {
+  let n = norm(s);
+  for (const [pattern, replacement] of BAIRRO_ABREV) {
+    n = n.replace(pattern, replacement);
+  }
+  return n;
 }
 
 const IMOVEIS_MOCK = [
@@ -78,7 +98,7 @@ export class ImoveisService {
 
   private buscarMock(filtro: FiltroImoveis) {
     return IMOVEIS_MOCK.filter((im) => {
-      if (filtro.bairro && !norm(im.bairro).includes(norm(filtro.bairro))) return false;
+      if (filtro.bairro && !norm(im.bairro).includes(normBairro(filtro.bairro))) return false;
       if (filtro.tipo && !norm(im.tipo).includes(normTipo(filtro.tipo))) return false;
       if (filtro.dormitorios !== undefined && (im.dormitorios === null || im.dormitorios < filtro.dormitorios)) return false;
       if (filtro.valorMax !== undefined && im.valor_locacao > filtro.valorMax) return false;
@@ -91,7 +111,7 @@ export class ImoveisService {
     let imoveis = this.scraperService.getCache();
 
     if (filtro.bairro) {
-      imoveis = imoveis.filter((im) => norm(im.bairro).includes(norm(filtro.bairro!)));
+      imoveis = imoveis.filter((im) => norm(im.bairro).includes(normBairro(filtro.bairro!)));
     }
     if (filtro.tipo) {
       imoveis = imoveis.filter((im) => norm(im.tipo).includes(normTipo(filtro.tipo!)));
