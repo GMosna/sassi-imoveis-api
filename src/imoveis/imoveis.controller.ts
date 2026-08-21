@@ -71,13 +71,14 @@ export class ImoveisController {
     const resultados = todos.slice(offsetNum, offsetNum + limitNum);
     const temMais = todos.length > offsetNum + limitNum;
 
-    const mensagem = this.formatarMensagem(resultados, temMais);
-    const mensagens = this.formatarMensagens(resultados, temMais);
+    const incluirFechamento = !limit;
+    const mensagem = this.formatarMensagem(resultados, temMais, incluirFechamento);
+    const mensagens = this.formatarMensagens(resultados, temMais, incluirFechamento);
 
     return { mensagem, mensagens, resultados, temMais };
   }
 
-  private formatarMensagem(resultados: any[], temMais: boolean): string {
+  private formatarMensagem(resultados: any[], temMais: boolean, incluirFechamento = true): string {
     if (!resultados || resultados.length === 0) {
       return 'No momento não encontrei nenhum imóvel disponível com esse perfil. Posso registrar seus critérios de busca para que nossa equipe entre em contato assim que surgirem opções?';
     }
@@ -115,6 +116,7 @@ export class ImoveisController {
     });
 
     const corpo = itens.join('\n\n---\n\n');
+    if (!incluirFechamento) return corpo;
     const fechamento = temMais
       ? `\n\n*Gostou de alguma dessas opções, ou quer que eu envie mais 3?*`
       : `\n\n*Gostou de alguma dessas opções?*`;
@@ -122,7 +124,7 @@ export class ImoveisController {
     return corpo + fechamento;
   }
 
-  private formatarMensagens(resultados: any[], temMais: boolean): string[] {
+  private formatarMensagens(resultados: any[], temMais: boolean, incluirFechamento = true): string[] {
     if (!resultados || resultados.length === 0) {
       return ['No momento não encontrei nenhum imóvel disponível com esse perfil. Posso registrar seus critérios de busca para que nossa equipe entre em contato assim que surgirem opções?'];
     }
@@ -159,9 +161,11 @@ export class ImoveisController {
       return linhas.join('\n');
     });
 
-    mensagens.push(temMais
-      ? '*Gostou de alguma dessas opções, ou quer que eu envie mais 3?*'
-      : '*Gostou de alguma dessas opções?*');
+    if (incluirFechamento) {
+      mensagens.push(temMais
+        ? '*Gostou de alguma dessas opções, ou quer que eu envie mais 3?*'
+        : '*Gostou de alguma dessas opções?*');
+    }
 
     return mensagens;
   }
