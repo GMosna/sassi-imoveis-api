@@ -24,6 +24,7 @@ export class ImoveisController {
     @Headers('x-valor-max') xValorMax: string | undefined,
     @Headers('x-vagas-min') xVagasMin: string | undefined,
     @Headers('x-offset') xOffset: string | undefined,
+    @Headers('x-limit') xLimit: string | undefined,
     @Query('bairro') qBairro?: string,
     @Query('tipo') qTipo?: string,
     @Query('dormitorios') qDormitorios?: string,
@@ -31,6 +32,7 @@ export class ImoveisController {
     @Query('vagas_min') qVagasMin?: string,
     @Query('token') qToken?: string,
     @Query('offset') qOffset?: string,
+    @Query('limit') qLimit?: string,
   ) {
     const bairro = xBairro || qBairro;
     const tipo = xTipo || qTipo;
@@ -38,6 +40,7 @@ export class ImoveisController {
     const valorMax = xValorMax || qValorMax;
     const vagasMin = xVagasMin || qVagasMin;
     const offset = xOffset || qOffset;
+    const limit = xLimit || qLimit;
 
     this.logger.log(
       `Requisição recebida — bairro=${bairro} tipo=${tipo} dormitorios=${dormitorios} valor_max=${valorMax} vagas_min=${vagasMin} offset=${offset} temToken=${!!authHeader} origem=${xBairro || xTipo ? 'headers' : 'query'}`,
@@ -55,6 +58,7 @@ export class ImoveisController {
     const valorMaxNum = extrairNumero(valorMax);
     const vagasMinNum = extrairNumero(vagasMin);
     const offsetNum = extrairNumero(offset) ?? 0;
+    const limitNum = extrairNumero(limit) ?? 3;
 
     const todos = await this.imoveisService.buscar({
       bairro,
@@ -64,8 +68,8 @@ export class ImoveisController {
       vagasMin: vagasMinNum,
     });
 
-    const resultados = todos.slice(offsetNum, offsetNum + 3);
-    const temMais = todos.length > offsetNum + 3;
+    const resultados = todos.slice(offsetNum, offsetNum + limitNum);
+    const temMais = todos.length > offsetNum + limitNum;
 
     const mensagem = this.formatarMensagem(resultados, temMais);
     const mensagens = this.formatarMensagens(resultados, temMais);
