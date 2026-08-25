@@ -72,7 +72,10 @@ export class ImoveisController {
     const temMais = todos.length > offsetNum + limitNum;
 
     const incluirFechamento = !limit;
-    const mensagem = this.formatarMensagem(resultados, temMais, incluirFechamento);
+    const buscaIndividual = limitNum === 1;
+    const mensagem = buscaIndividual && resultados.length === 0
+      ? ''
+      : this.formatarMensagem(resultados, temMais, incluirFechamento);
     const mensagens = this.formatarMensagens(resultados, temMais, incluirFechamento);
 
     return { mensagem, mensagens, resultados, temMais };
