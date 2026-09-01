@@ -45,6 +45,72 @@ function normBairro(s: string): string {
   return n;
 }
 
+const BAIRRO_EXPAND: [RegExp, string][] = [
+  [/\bjd\.?\b/g, 'jardim'],
+  [/\bpq\.?\b/g, 'parque'],
+  [/\bcond\.?\b/g, 'condominio'],
+  [/\bresid\.?\b/g, 'residencial'],
+];
+
+function normBairroExpanded(s: string): string {
+  let n = norm(s);
+  for (const [pattern, replacement] of BAIRRO_EXPAND) {
+    n = n.replace(pattern, replacement);
+  }
+  return n;
+}
+
+export function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = new Array<number>(n + 1);
+  let curr = new Array<number>(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+
+export function fuzzyContains(haystack: string, needle: string, threshold: number): boolean {
+  if (haystack.includes(needle)) return true;
+  const n = needle.length;
+  if (n < 4) return false;
+  const minLen = Math.max(1, n - threshold);
+  const maxLen = n + threshold;
+  for (let len = minLen; len <= maxLen; len++) {
+    if (len > haystack.length) break;
+    for (let i = 0; i + len <= haystack.length; i++) {
+      const window = haystack.substring(i, i + len);
+      if (levenshtein(window, needle) <= threshold) return true;
+    }
+  }
+  return false;
+}
+
+export function bairroThreshold(qLen: number): number {
+  if (qLen < 5) return 0;
+  return qLen >= 10 ? 2 : 1;
+}
+
+export function filtrarPorBairro<T extends { bairro: string }>(imoveis: T[], bairro: string): T[] {
+  const q = normBairro(bairro);
+  const exatos = imoveis.filter((im) => norm(im.bairro).includes(q));
+  if (exatos.length > 0) return exatos;
+  const qExp = normBairroExpanded(bairro);
+  const threshold = bairroThreshold(qExp.length);
+  if (threshold === 0) return exatos;
+  return imoveis.filter((im) => fuzzyContains(normBairroExpanded(im.bairro), qExp, threshold));
+}
+
 const IMOVEIS_MOCK = [
   {
     codigo: 1001,
@@ -97,8 +163,11 @@ export class ImoveisService {
   }
 
   private buscarMock(filtro: FiltroImoveis) {
-    return IMOVEIS_MOCK.filter((im) => {
-      if (filtro.bairro && !norm(im.bairro).includes(normBairro(filtro.bairro))) return false;
+    let imoveis = IMOVEIS_MOCK as any[];
+    if (filtro.bairro) {
+      imoveis = filtrarPorBairro(imoveis, filtro.bairro);
+    }
+    return imoveis.filter((im) => {
       if (filtro.tipo && !norm(im.tipo).includes(normTipo(filtro.tipo))) return false;
       if (filtro.dormitorios !== undefined && (im.dormitorios === null || im.dormitorios < filtro.dormitorios)) return false;
       if (filtro.valorMax !== undefined && im.valor_locacao > filtro.valorMax) return false;
@@ -111,7 +180,7 @@ export class ImoveisService {
     let imoveis = this.scraperService.getCache();
 
     if (filtro.bairro) {
-      imoveis = imoveis.filter((im) => norm(im.bairro).includes(normBairro(filtro.bairro!)));
+      imoveis = filtrarPorBairro(imoveis, filtro.bairro);
     }
     if (filtro.tipo) {
       imoveis = imoveis.filter((im) => norm(im.tipo).includes(normTipo(filtro.tipo!)));
