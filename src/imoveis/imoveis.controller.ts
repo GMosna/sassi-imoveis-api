@@ -48,10 +48,32 @@ export class ImoveisController {
 
     this.validarToken(authHeader, xApiToken, qToken);
 
+    const NUMERO_EXTENSO: Record<string, number> = {
+      zero: 0, um: 1, uma: 1, dois: 2, duas: 2, tres: 3, quatro: 4,
+      cinco: 5, seis: 6, sete: 7, oito: 8, nove: 9, dez: 10,
+    };
+
     const extrairNumero = (texto: string | undefined): number | undefined => {
       if (!texto) return undefined;
-      const match = texto.replace(/\./g, '').match(/\d+/);
-      return match ? Number(match[0]) : undefined;
+
+      const limpo = texto
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .toLowerCase();
+
+      // "3 mil", "2,5 mil" -> multiplica por 1000
+      const mil = limpo.replace(/\./g, '').match(/(\d+(?:,\d+)?)\s*mil\b/);
+      if (mil) return Math.round(Number(mil[1].replace(',', '.')) * 1000);
+
+      const match = limpo.replace(/\./g, '').match(/\d+/);
+      if (match) return Number(match[0]);
+
+      // "dois", "tres quartos" -> numero por extenso
+      for (const [palavra, valor] of Object.entries(NUMERO_EXTENSO)) {
+        if (new RegExp('\\b' + palavra + '\\b').test(limpo)) return valor;
+      }
+
+      return undefined;
     };
 
     const dormitoriosNum = extrairNumero(dormitorios);

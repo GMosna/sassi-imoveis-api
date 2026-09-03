@@ -13,6 +13,35 @@ function norm(s: string): string {
   return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 }
 
+// Remove preposicoes, artigos e palavras de ruido que o cliente costuma
+// digitar junto do criterio (ex: "na chacara antonieta", "um apartamento",
+// "quero casa", "ate 3000"). Sem isso a comparacao literal falha.
+const PALAVRAS_RUIDO = [
+  'na', 'no', 'em', 'de', 'da', 'do', 'para', 'pra', 'pro',
+  'um', 'uma', 'uns', 'umas', 'o', 'a', 'os', 'as',
+  'bairro', 'regiao', 'zona', 'vila',
+  'quero', 'queria', 'busco', 'procuro', 'seria', 'algo',
+  'ate', 'no maximo', 'maximo', 'max', 'aproximadamente', 'cerca', 'perto',
+  'reais', 'real', 'r$', 'rs',
+  'quarto', 'quartos', 'dormitorio', 'dormitorios',
+];
+
+function limparRuido(s: string): string {
+  let n = norm(s).replace(/[^\w\s.$]/g, ' ');
+  let mudou = true;
+  while (mudou) {
+    mudou = false;
+    const antes = n;
+    for (const palavra of PALAVRAS_RUIDO) {
+      n = n.replace(new RegExp('^\\s*' + palavra.replace('$', '\\$') + '\\s+', 'i'), '');
+      n = n.replace(new RegExp('\\s+' + palavra.replace('$', '\\$') + '\\s*$', 'i'), '');
+    }
+    n = n.trim();
+    if (n !== antes.trim()) mudou = true;
+  }
+  return n.replace(/\s+/g, ' ').trim();
+}
+
 const TIPO_SINONIMOS: Record<string, string> = {
   'apto': 'apartamento',
   'ap': 'apartamento',
@@ -22,8 +51,20 @@ const TIPO_SINONIMOS: Record<string, string> = {
 };
 
 function normTipo(s: string): string {
-  const n = norm(s).trim();
+  const n = limparRuido(s);
   return TIPO_SINONIMOS[n] ?? n;
+}
+
+// Compara o tipo tolerando erro de digitacao ("apartemento"), do mesmo jeito
+// que ja era feito no bairro.
+export function tipoCombina(tipoImovel: string, tipoBusca: string): boolean {
+  const alvo = norm(tipoImovel);
+  const q = normTipo(tipoBusca);
+  if (!q) return true;
+  if (alvo.includes(q)) return true;
+  const threshold = q.length >= 10 ? 2 : q.length >= 5 ? 1 : 0;
+  if (threshold === 0) return false;
+  return fuzzyContains(alvo, q, threshold);
 }
 
 const BAIRRO_ABREV: [RegExp, string][] = [
@@ -38,7 +79,7 @@ const BAIRRO_ABREV: [RegExp, string][] = [
 ];
 
 function normBairro(s: string): string {
-  let n = norm(s);
+  let n = limparRuido(s);
   for (const [pattern, replacement] of BAIRRO_ABREV) {
     n = n.replace(pattern, replacement);
   }
@@ -53,7 +94,7 @@ const BAIRRO_EXPAND: [RegExp, string][] = [
 ];
 
 function normBairroExpanded(s: string): string {
-  let n = norm(s);
+  let n = limparRuido(s);
   for (const [pattern, replacement] of BAIRRO_EXPAND) {
     n = n.replace(pattern, replacement);
   }
@@ -168,7 +209,7 @@ export class ImoveisService {
       imoveis = filtrarPorBairro(imoveis, filtro.bairro);
     }
     return imoveis.filter((im) => {
-      if (filtro.tipo && !norm(im.tipo).includes(normTipo(filtro.tipo))) return false;
+      if (filtro.tipo && !tipoCombina(im.tipo, filtro.tipo)) return false;
       if (filtro.dormitorios !== undefined && (im.dormitorios === null || im.dormitorios < filtro.dormitorios)) return false;
       if (filtro.valorMax !== undefined && im.valor_locacao > filtro.valorMax) return false;
       if (filtro.vagasMin !== undefined && (im.vagas_garagem === null || im.vagas_garagem < filtro.vagasMin)) return false;
@@ -183,7 +224,7 @@ export class ImoveisService {
       imoveis = filtrarPorBairro(imoveis, filtro.bairro);
     }
     if (filtro.tipo) {
-      imoveis = imoveis.filter((im) => norm(im.tipo).includes(normTipo(filtro.tipo!)));
+      imoveis = imoveis.filter((im) => tipoCombina(im.tipo, filtro.tipo!));
     }
     if (filtro.dormitorios !== undefined) {
       imoveis = imoveis.filter((im) => im.dormitorios !== null && im.dormitorios >= filtro.dormitorios!);
