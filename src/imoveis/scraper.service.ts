@@ -7,6 +7,7 @@ export interface Imovel {
   tipo: string;
   bairro: string;
   valor_locacao: number;
+  valor_condominio: number | null;
   dormitorios: number | null;
   vagas_garagem: number | null;
   metragem: number | null;
@@ -120,7 +121,12 @@ export class ScraperService implements OnModuleInit {
         ? (fotoPath.startsWith('http') ? fotoPath : `https://sassiimoveis.com.br${fotoPath}`)
         : undefined;
 
-      return { codigo, tipo, bairro, valor_locacao, dormitorios, vagas_garagem, metragem, link, foto };
+      // valor_condominio nao aparece no card da listagem (so na pagina interna
+      // do imovel). Buscar cada pagina custaria N+1 requests por scrape; deixado
+      // como null ate decisao explicita sobre esse trade-off.
+      const valor_condominio: number | null = null;
+
+      return { codigo, tipo, bairro, valor_locacao, valor_condominio, dormitorios, vagas_garagem, metragem, link, foto };
     } catch (err) {
       this.logger.warn(`Erro ao extrair card: ${err}`);
       return null;

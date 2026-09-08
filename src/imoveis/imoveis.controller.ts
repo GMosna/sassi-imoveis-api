@@ -123,27 +123,27 @@ export class ImoveisController {
 
     const itens = resultados.map((im) => {
       const linhas: string[] = [];
-      linhas.push(`🏡 *Código*: ${im.codigo}`);
+      linhas.push(`🏡 *Chave*: ${im.codigo}`);
       linhas.push(`*${im.tipo}* em ${im.bairro}`);
       linhas.push('');
-      if (im.valor_locacao !== undefined) {
+      if (im.valor_locacao !== undefined && im.valor_locacao !== null) {
         linhas.push(`*Aluguel*: R$ ${formatarValor(im.valor_locacao)}`);
       }
-      const detalhes: string[] = [];
-      if (im.dormitorios != null) detalhes.push(`*Quartos*: ${im.dormitorios}`);
-      else detalhes.push(`*Quartos*: não informado`);
-      if (im.vagas_garagem) detalhes.push(`*Vagas*: ${im.vagas_garagem}`);
-      if (im.metragem) detalhes.push(`${im.metragem}m²`);
-      if (detalhes.length) linhas.push(detalhes.join(' · '));
+      if (im.valor_condominio != null && im.valor_condominio > 0) {
+        linhas.push(`*Condomínio*: R$ ${formatarValor(im.valor_condominio)}`);
+      }
+      linhas.push(
+        im.dormitorios != null
+          ? `*Quartos*: ${im.dormitorios}`
+          : '*Quartos*: não informado',
+      );
+      if (im.vagas_garagem) linhas.push(`*Vagas*: ${im.vagas_garagem}`);
+      if (im.metragem) linhas.push(`*Metragem*: ${im.metragem}m²`);
       linhas.push('');
       linhas.push('_Os valores estão sujeitos a alterações._');
-      if (im.foto) {
-        linhas.push('');
-        linhas.push(`📷 ${im.foto}`);
-      }
       if (im.link) {
         linhas.push('');
-        linhas.push(`🔗 ${im.link}`);
+        linhas.push(im.link);
       }
       return linhas.join('\n');
     });
@@ -169,27 +169,27 @@ export class ImoveisController {
 
     const mensagens: string[] = resultados.map((im) => {
       const linhas: string[] = [];
-      linhas.push(`🏡 *Código*: ${im.codigo}`);
+      linhas.push(`🏡 *Chave*: ${im.codigo}`);
       linhas.push(`*${im.tipo}* em ${im.bairro}`);
       linhas.push('');
-      if (im.valor_locacao !== undefined) {
+      if (im.valor_locacao !== undefined && im.valor_locacao !== null) {
         linhas.push(`*Aluguel*: R$ ${formatarValor(im.valor_locacao)}`);
       }
-      const detalhes: string[] = [];
-      if (im.dormitorios != null) detalhes.push(`*Quartos*: ${im.dormitorios}`);
-      else detalhes.push(`*Quartos*: não informado`);
-      if (im.vagas_garagem) detalhes.push(`*Vagas*: ${im.vagas_garagem}`);
-      if (im.metragem) detalhes.push(`${im.metragem}m²`);
-      if (detalhes.length) linhas.push(detalhes.join(' · '));
+      if (im.valor_condominio != null && im.valor_condominio > 0) {
+        linhas.push(`*Condomínio*: R$ ${formatarValor(im.valor_condominio)}`);
+      }
+      linhas.push(
+        im.dormitorios != null
+          ? `*Quartos*: ${im.dormitorios}`
+          : '*Quartos*: não informado',
+      );
+      if (im.vagas_garagem) linhas.push(`*Vagas*: ${im.vagas_garagem}`);
+      if (im.metragem) linhas.push(`*Metragem*: ${im.metragem}m²`);
       linhas.push('');
       linhas.push('_Os valores estão sujeitos a alterações._');
-      if (im.foto) {
-        linhas.push('');
-        linhas.push(`📷 ${im.foto}`);
-      }
       if (im.link) {
         linhas.push('');
-        linhas.push(`🔗 ${im.link}`);
+        linhas.push(im.link);
       }
       return linhas.join('\n');
     });
