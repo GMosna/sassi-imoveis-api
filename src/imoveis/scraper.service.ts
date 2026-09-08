@@ -77,7 +77,58 @@ export class ScraperService implements OnModuleInit {
       await delay(400);
     }
 
+    await this.enriquecerComCondominio(todos);
     return todos;
+  }
+
+  /** Busca o valor do condomínio na página interna do imóvel. Nunca lança. */
+  private async buscarCondominio(link: string): Promise<number | null> {
+    try {
+      const res = await fetch(link, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SassiImoveisBot/1.0)' },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return null;
+
+      const $ = cheerio.load(await res.text());
+      const texto = $('div#imovelExtra').text().replace(/\s+/g, ' ');
+      const m = texto.match(/Condom[ií]nio:?\s*(R\$\s*[\d.,]+)/i);
+      return m ? parseBRNumber(m[1]) || null : null;
+    } catch (err) {
+      this.logger.debug(`Condomínio não obtido em ${link}: ${err}`);
+      return null;
+    }
+  }
+
+  /** Preenche valor_condominio dos apartamentos, em lotes, sem derrubar o scrape. */
+  private async enriquecerComCondominio(imoveis: Imovel[]): Promise<void> {
+    const semAcento = (s: string) =>
+      (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+    const alvos = imoveis.filter((im) => {
+      const t = semAcento(im.tipo);
+      return t.includes('apartamento') || t.includes('condominio');
+    });
+
+    if (alvos.length === 0) return;
+
+    const TAMANHO_LOTE = 5;
+    let encontrados = 0;
+
+    for (let i = 0; i < alvos.length; i += TAMANHO_LOTE) {
+      const lote = alvos.slice(i, i + TAMANHO_LOTE);
+      await Promise.all(
+        lote.map(async (im) => {
+          im.valor_condominio = await this.buscarCondominio(im.link);
+          if (im.valor_condominio != null) encontrados++;
+        }),
+      );
+      await delay(400);
+    }
+
+    this.logger.log(
+      `Condomínio: ${encontrados}/${alvos.length} apartamentos com valor encontrado`,
+    );
   }
 
   private extrairCard($: cheerio.CheerioAPI, card: any): Imovel | null {
