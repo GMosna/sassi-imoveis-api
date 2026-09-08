@@ -21,6 +21,7 @@ export class ImoveisController {
     @Headers('x-bairro') xBairro: string | undefined,
     @Headers('x-tipo') xTipo: string | undefined,
     @Headers('x-dormitorios') xDormitorios: string | undefined,
+    @Headers('x-dormitorios-exato') xDormitoriosExato: string | undefined,
     @Headers('x-valor-max') xValorMax: string | undefined,
     @Headers('x-vagas-min') xVagasMin: string | undefined,
     @Headers('x-offset') xOffset: string | undefined,
@@ -28,6 +29,7 @@ export class ImoveisController {
     @Query('bairro') qBairro?: string,
     @Query('tipo') qTipo?: string,
     @Query('dormitorios') qDormitorios?: string,
+    @Query('dormitorios_exato') qDormitoriosExato?: string,
     @Query('valor_max') qValorMax?: string,
     @Query('vagas_min') qVagasMin?: string,
     @Query('token') qToken?: string,
@@ -37,13 +39,18 @@ export class ImoveisController {
     const bairro = xBairro || qBairro;
     const tipo = xTipo || qTipo;
     const dormitorios = xDormitorios || qDormitorios;
+    // aceita "true", "1", "sim", "exato" (qualquer caixa) como modo exato
+    const dormitoriosExatoRaw = xDormitoriosExato || qDormitoriosExato;
+    const dormitoriosExato = /^(true|1|sim|exato)$/i.test(
+      (dormitoriosExatoRaw || '').trim(),
+    );
     const valorMax = xValorMax || qValorMax;
     const vagasMin = xVagasMin || qVagasMin;
     const offset = xOffset || qOffset;
     const limit = xLimit || qLimit;
 
     this.logger.log(
-      `Requisição recebida — bairro=${bairro} tipo=${tipo} dormitorios=${dormitorios} valor_max=${valorMax} vagas_min=${vagasMin} offset=${offset} temToken=${!!authHeader} origem=${xBairro || xTipo ? 'headers' : 'query'}`,
+      `Requisição recebida — bairro=${bairro} tipo=${tipo} dormitorios=${dormitorios} exato=${dormitoriosExato} valor_max=${valorMax} vagas_min=${vagasMin} offset=${offset} temToken=${!!authHeader} origem=${xBairro || xTipo ? 'headers' : 'query'}`,
     );
 
     this.validarToken(authHeader, xApiToken, qToken);
@@ -86,6 +93,7 @@ export class ImoveisController {
       bairro,
       tipo,
       dormitorios: dormitoriosNum,
+      dormitoriosExato,
       valorMax: valorMaxNum,
       vagasMin: vagasMinNum,
     });

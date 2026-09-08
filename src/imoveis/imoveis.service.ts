@@ -5,6 +5,8 @@ export interface FiltroImoveis {
   bairro?: string;
   tipo?: string;
   dormitorios?: number;
+  /** true = quantidade exata de dormitorios; false/undefined = "no minimo" */
+  dormitoriosExato?: boolean;
   valorMax?: number;
   vagasMin?: number;
 }
@@ -210,7 +212,12 @@ export class ImoveisService {
     }
     return imoveis.filter((im) => {
       if (filtro.tipo && !tipoCombina(im.tipo, filtro.tipo)) return false;
-      if (filtro.dormitorios !== undefined && (im.dormitorios === null || im.dormitorios < filtro.dormitorios)) return false;
+      if (filtro.dormitorios !== undefined) {
+        if (im.dormitorios === null) return false;
+        if (filtro.dormitoriosExato) {
+          if (im.dormitorios !== filtro.dormitorios) return false;
+        } else if (im.dormitorios < filtro.dormitorios) return false;
+      }
       if (filtro.valorMax !== undefined && im.valor_locacao > filtro.valorMax) return false;
       if (filtro.vagasMin !== undefined && (im.vagas_garagem === null || im.vagas_garagem < filtro.vagasMin)) return false;
       return true;
@@ -227,7 +234,12 @@ export class ImoveisService {
       imoveis = imoveis.filter((im) => tipoCombina(im.tipo, filtro.tipo!));
     }
     if (filtro.dormitorios !== undefined) {
-      imoveis = imoveis.filter((im) => im.dormitorios !== null && im.dormitorios >= filtro.dormitorios!);
+      imoveis = imoveis.filter((im) =>
+        im.dormitorios !== null &&
+        (filtro.dormitoriosExato
+          ? im.dormitorios === filtro.dormitorios
+          : im.dormitorios >= filtro.dormitorios!),
+      );
     }
     if (filtro.valorMax !== undefined) {
       imoveis = imoveis.filter((im) => im.valor_locacao <= filtro.valorMax!);
