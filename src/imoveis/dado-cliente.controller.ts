@@ -40,6 +40,12 @@ export class DadoClienteController {
       return { valor: normalizado ?? bruto, valido: normalizado !== null };
     }
 
+    if (qual === 'email' || qual === 'e-mail') {
+      const normalizado = normalizarEmail(bruto);
+      this.logger.log(`dado-cliente tipo=email valido=${normalizado !== null}`);
+      return { valor: normalizado ?? bruto, valido: normalizado !== null };
+    }
+
     const nome = normalizarNome(bruto);
     this.logger.log(`dado-cliente tipo=nome valido=${nome !== null}`);
     return { valor: nome ?? bruto, valido: nome !== null };
@@ -62,19 +68,62 @@ export class DadoClienteController {
   }
 }
 
-/** Mantém só dígitos e valida DDD + 8/9 dígitos. Retorna no formato 55DDDNUMERO. */
+/**
+ * Extrai e normaliza um telefone brasileiro escrito de qualquer jeito.
+ * Aceita frases inteiras ("meu whats é (19) 99778-0680, pode chamar"),
+ * qualquer separador (espaço, hífen, ponto, barra, parênteses) e DDI opcional.
+ * Retorna no formato 55DDDNUMERO.
+ */
 export function normalizarTelefone(entrada: string): string | null {
-  let d = (entrada || '').replace(/\D/g, '');
-  if (!d) return null;
-  if (d.startsWith('55') && d.length >= 12) d = d.slice(2); // tira DDI
-  if (d.length === 10 || d.length === 11) {
-    const ddd = Number(d.slice(0, 2));
-    if (ddd < 11 || ddd > 99) return null;
-    // celular com 9 digitos deve comecar com 9
-    if (d.length === 11 && d[2] !== '9') return null;
-    return '55' + d;
+  const texto = entrada || '';
+
+  // 1) tenta achar um trecho com cara de telefone dentro do texto
+  const candidatos: string[] = [];
+  const padrao = /(?:\+?\s*55[\s.\-]*)?(?:\(?\s*\d{2}\s*\)?[\s.\-]*)?\d[\d\s.\-]{7,14}\d/g;
+  for (const m of texto.matchAll(padrao)) candidatos.push(m[0]);
+
+  // 2) fallback: todos os digitos do texto
+  candidatos.push(texto);
+
+  for (const c of candidatos) {
+    const r = digitosParaTelefone(c.replace(/\D/g, ''));
+    if (r) return r;
   }
   return null;
+}
+
+/** Valida a sequencia de digitos (com ou sem DDI 55) e devolve 55DDDNUMERO. */
+function digitosParaTelefone(d: string): string | null {
+  if (!d) return null;
+
+  // remove DDI quando o resto continua com tamanho de telefone
+  if (d.startsWith('55') && (d.length === 12 || d.length === 13)) d = d.slice(2);
+  // alguns digitam 0 antes do DDD (0 19 99999-8888)
+  if (d.startsWith('0') && (d.length === 11 || d.length === 12)) d = d.slice(1);
+
+  if (d.length !== 10 && d.length !== 11) return null;
+
+  const ddd = Number(d.slice(0, 2));
+  if (ddd < 11 || ddd > 99) return null;
+
+  // celular (11 digitos) tem que comecar com 9; fixo (10) comeca de 2 a 5
+  if (d.length === 11 && d[2] !== '9') return null;
+  if (d.length === 10 && !'2345'.includes(d[2])) return null;
+
+  return '55' + d;
+}
+
+/** Valida e normaliza e-mail (minusculo, sem espaços, extrai de dentro de frases). */
+export function normalizarEmail(entrada: string): string | null {
+  const texto = (entrada || '').trim();
+  if (!texto) return null;
+  const m = texto
+    .replace(/\s+/g, ' ')
+    .match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
+  if (!m) return null;
+  const email = m[0].toLowerCase().replace(/[.,;]+$/, '');
+  if (email.length > 254) return null;
+  return email;
 }
 
 /** Title case simples, preservando conectivos em minúsculo. */
