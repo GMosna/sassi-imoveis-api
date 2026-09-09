@@ -4,15 +4,9 @@ import { ImoveisService } from './imoveis.service';
 import { ScraperService } from './scraper.service';
 import { DadoClienteController } from './dado-cliente.controller';
 import { LeadController } from './lead.controller';
-import { CrmDiagnosticoController } from './crm-diagnostico.controller';
 
 @Module({
-  controllers: [
-    ImoveisController,
-    DadoClienteController,
-    LeadController,
-    CrmDiagnosticoController,
-  ],
+  controllers: [ImoveisController, DadoClienteController, LeadController],
   providers: [ImoveisService, ScraperService],
 })
 export class ImoveisModule {}
