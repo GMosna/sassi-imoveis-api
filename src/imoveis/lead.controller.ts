@@ -16,6 +16,7 @@ const RESPONSAVEL_SDR = '63456e30196d48000e02eb0c';   // SDR Locação
 interface ResultadoLead {
   registrado: boolean;
   motivo?: string;
+  detalhe?: string;
   deal_id?: string;
 }
 
@@ -82,7 +83,11 @@ export class LeadController {
         this.logger.error(
           `RD CRM recusou o lead (HTTP ${resp.status}): ${texto.slice(0, 300)}`,
         );
-        return { registrado: false, motivo: `CRM respondeu ${resp.status}` };
+        return {
+          registrado: false,
+          motivo: `CRM respondeu ${resp.status}`,
+          detalhe: texto.slice(0, 500),
+        };
       }
 
       const dados: any = await resp.json();
