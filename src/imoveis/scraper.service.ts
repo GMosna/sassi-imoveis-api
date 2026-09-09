@@ -1,6 +1,8 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import * as cheerio from 'cheerio';
+import { promises as fs } from 'fs';
+import * as path from 'path';
 
 export interface Imovel {
   codigo: number;
@@ -20,14 +22,68 @@ export class ScraperService implements OnModuleInit {
   private readonly logger = new Logger(ScraperService.name);
   private cache: Imovel[] = [];
   private readonly useMock: boolean;
+  private readonly cacheFile = path.join(
+    process.env.CACHE_DIR || '/tmp',
+    'imoveis-cache.json',
+  );
+
+  /** codigo do imovel -> { valor, quando } */
+  private condominioConhecido = new Map<
+    string,
+    { valor: number | null; quando: number }
+  >();
+  private readonly VALIDADE_CONDOMINIO_MS = 24 * 60 * 60 * 1000;
 
   constructor() {
     this.useMock = process.env.USE_MOCK_DATA === 'true';
   }
 
-  async onModuleInit() {
-    if (!this.useMock) {
-      await this.scrape();
+  onModuleInit() {
+    if (this.useMock) return;
+    // Não await: a API precisa responder imediatamente. O scrape popula o
+    // cache em segundo plano; até lá, o cache carregado do disco atende.
+    void this.carregarCacheDoDisco().then(() => this.scrape());
+  }
+
+  /** Carrega o cache do disco para atender já nos primeiros segundos. */
+  private async carregarCacheDoDisco(): Promise<void> {
+    try {
+      const conteudo = await fs.readFile(this.cacheFile, 'utf-8');
+      const dados = JSON.parse(conteudo);
+
+      if (Array.isArray(dados)) {
+        // Formato antigo: array puro de imóveis
+        if (dados.length) {
+          this.cache = dados;
+          this.logger.log(`Cache carregado do disco: ${dados.length} imóveis`);
+        }
+      } else if (dados && typeof dados === 'object') {
+        // Formato novo: { imoveis, condominios }
+        if (Array.isArray(dados.imoveis) && dados.imoveis.length) {
+          this.cache = dados.imoveis;
+          this.logger.log(
+            `Cache carregado do disco: ${dados.imoveis.length} imóveis`,
+          );
+        }
+        if (Array.isArray(dados.condominios)) {
+          this.condominioConhecido = new Map(dados.condominios);
+        }
+      }
+    } catch {
+      this.logger.log('Sem cache em disco — aguardando primeiro scrape');
+    }
+  }
+
+  /** Salva o cache. Falha aqui nunca pode derrubar o scrape. */
+  private async salvarCacheEmDisco(): Promise<void> {
+    try {
+      const payload = {
+        imoveis: this.cache,
+        condominios: Array.from(this.condominioConhecido.entries()),
+      };
+      await fs.writeFile(this.cacheFile, JSON.stringify(payload), 'utf-8');
+    } catch (err) {
+      this.logger.warn(`Não consegui salvar o cache em disco: ${err}`);
     }
   }
 
@@ -38,6 +94,7 @@ export class ScraperService implements OnModuleInit {
     try {
       const resultado = await this.buscarTodosImoveis();
       this.cache = resultado;
+      await this.salvarCacheEmDisco();
       this.logger.log(`Scrape concluído: ${resultado.length} imóveis encontrados`);
     } catch (err) {
       this.logger.error(
@@ -112,14 +169,37 @@ export class ScraperService implements OnModuleInit {
 
     if (alvos.length === 0) return;
 
+    const agora = Date.now();
+    const pendentes: Imovel[] = [];
+
+    for (const im of alvos) {
+      const conhecido = this.condominioConhecido.get(String(im.codigo));
+      if (conhecido && agora - conhecido.quando < this.VALIDADE_CONDOMINIO_MS) {
+        im.valor_condominio = conhecido.valor;
+      } else {
+        pendentes.push(im);
+      }
+    }
+
+    if (pendentes.length === 0) {
+      this.logger.log(
+        `Condomínio: ${alvos.length} apartamentos, todos reaproveitados do cache`,
+      );
+      return;
+    }
+
     const TAMANHO_LOTE = 5;
     let encontrados = 0;
 
-    for (let i = 0; i < alvos.length; i += TAMANHO_LOTE) {
-      const lote = alvos.slice(i, i + TAMANHO_LOTE);
+    for (let i = 0; i < pendentes.length; i += TAMANHO_LOTE) {
+      const lote = pendentes.slice(i, i + TAMANHO_LOTE);
       await Promise.all(
         lote.map(async (im) => {
           im.valor_condominio = await this.buscarCondominio(im.link);
+          this.condominioConhecido.set(String(im.codigo), {
+            valor: im.valor_condominio,
+            quando: Date.now(),
+          });
           if (im.valor_condominio != null) encontrados++;
         }),
       );
@@ -127,7 +207,8 @@ export class ScraperService implements OnModuleInit {
     }
 
     this.logger.log(
-      `Condomínio: ${encontrados}/${alvos.length} apartamentos com valor encontrado`,
+      `Condomínio: ${encontrados}/${pendentes.length} buscados, ` +
+        `${alvos.length - pendentes.length} reaproveitados`,
     );
   }
 
