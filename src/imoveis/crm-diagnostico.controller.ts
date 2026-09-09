@@ -31,10 +31,9 @@ export class CrmDiagnosticoController {
 
     const buscar = async (caminho: string) => {
       try {
-        const r = await fetch(
-          `https://crm.rdstation.com/api/v1/${caminho}?token=${encodeURIComponent(tokenCrm)}`,
-          { signal: AbortSignal.timeout(10000) },
-        );
+        const separador = caminho.includes('?') ? '&' : '?';
+        const url = `https://crm.rdstation.com/api/v1/${caminho}${separador}token=${encodeURIComponent(tokenCrm)}`;
+        const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
         if (!r.ok) return { erro: `HTTP ${r.status}`, corpo: (await r.text()).slice(0, 200) };
         return await r.json();
       } catch (err) {
@@ -42,11 +41,12 @@ export class CrmDiagnosticoController {
       }
     };
 
-    const [conta, funis, etapas, usuarios] = await Promise.all([
+    const [conta, funis, etapas, etapasLocacao, usuarios] = await Promise.all([
       buscar('token/check'),
       buscar('deal_pipelines'),
-      buscar('deal_stages'),
-      buscar('users'),
+      buscar('deal_stages?limit=200'),
+      buscar('deal_stages?limit=200&deal_pipeline_id=66eaadbee736e20026d75b62'),
+      buscar('users?limit=200'),
     ]);
 
     // devolve apenas id e nome, para a resposta ficar legível
@@ -64,6 +64,7 @@ export class CrmDiagnosticoController {
       conta,
       funis: resumir(funis, 'deal_pipelines'),
       etapas: resumir(etapas, 'deal_stages'),
+      etapasLocacao: resumir(etapasLocacao, 'deal_stages'),
       usuarios: resumir(usuarios, 'users'),
     };
   }

@@ -11,7 +11,7 @@ import { normalizarTelefone, normalizarEmail, normalizarNome } from './dado-clie
 /** Destinos no RD Station CRM — mesmos usados pelo fluxo Comercial-oficial. */
 const FUNIL_LOCACAO = '66eaadbee736e20026d75b62';   // Locação - Beta
 const ETAPA_ATENDIMENTO = '66eaadbee736e20026d75b65'; // Atendimento
-const RESPONSAVEL_SDR = '63456e30196d48000e02eb0c';   // SDR Locação
+const RESPONSAVEL_SDR = '659c087c7406fd00168e5854';   // SDR Sassi (usuário do CRM)
 
 interface ResultadoLead {
   registrado: boolean;
@@ -56,13 +56,19 @@ export class LeadController {
     if (emailLimpo) contato.emails = [{ email: emailLimpo }];
     if (telLimpo) contato.phones = [{ phone: telLimpo, type: 'cellphone' }];
 
+    const dealBase: Record<string, unknown> = {
+      name: `${nomeLimpo} — Locação (IA)`,
+      deal_stage_id: ETAPA_ATENDIMENTO,
+      rating: 1,
+    };
+
+    // RDCRM_USER_ID vazio ou "none" => não envia user_id e deixa a
+    // distribuição sequencial do CRM escolher o responsável
+    const userId = process.env.RDCRM_USER_ID ?? RESPONSAVEL_SDR;
+    if (userId && userId !== 'none') dealBase.user_id = userId;
+
     const corpo = {
-      deal: {
-        name: `${nomeLimpo} — Locação (IA)`,
-        deal_stage_id: ETAPA_ATENDIMENTO,
-        user_id: RESPONSAVEL_SDR,
-        rating: 1,
-      },
+      deal: dealBase,
       contacts: [contato],
       distribution_settings: { type: 'sequential' },
     };
