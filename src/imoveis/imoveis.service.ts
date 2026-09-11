@@ -57,9 +57,35 @@ function normTipo(s: string): string {
   return TIPO_SINONIMOS[n] ?? n;
 }
 
+// Expressões de indiferença — cliente que aceita qualquer tipo.
+const TIPO_INDIFERENTE = [
+  'tanto faz',
+  'qualquer um',
+  'qualquer',
+  'nao tenho preferencia',
+  'sem preferencia',
+  'indiferente',
+  'nao importa',
+];
+
 // Compara o tipo tolerando erro de digitacao ("apartemento"), do mesmo jeito
-// que ja era feito no bairro.
+// que ja era feito no bairro. Aceita múltiplos tipos separados por "ou",
+// vírgula, barra ou "e" (ex: "casa ou apartamento") e expressões de
+// indiferença (ex: "tanto faz").
 export function tipoCombina(tipoImovel: string, tipoBusca: string): boolean {
+  const raw = norm(tipoBusca).trim();
+  if (!raw) return true;
+  if (TIPO_INDIFERENTE.some((t) => raw === t || raw.includes(t))) return true;
+
+  const partes = raw
+    .split(/\s+ou\s+|\s+e\s+|\s*[,/]\s*/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const alternativas = partes.length ? partes : [raw];
+  return alternativas.some((p) => tipoCombinaUnico(tipoImovel, p));
+}
+
+function tipoCombinaUnico(tipoImovel: string, tipoBusca: string): boolean {
   const alvo = norm(tipoImovel);
   const q = normTipo(tipoBusca);
   if (!q) return true;
@@ -141,7 +167,11 @@ export function fuzzyContains(haystack: string, needle: string, threshold: numbe
 
 export function bairroThreshold(qLen: number): number {
   if (qLen < 5) return 0;
-  return qLen >= 10 ? 2 : 1;
+  if (qLen < 8) return 1;
+  // termos longos: 2 edições só a partir de 16 caracteres,
+  // para não casar bairros distintos que compartilham sufixo
+  // (nobreville x centreville, por exemplo)
+  return qLen >= 16 ? 2 : 1;
 }
 
 export function filtrarPorBairro<T extends { bairro: string }>(imoveis: T[], bairro: string): T[] {
