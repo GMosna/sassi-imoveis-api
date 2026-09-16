@@ -12,6 +12,13 @@ import { ImoveisService } from './imoveis.service';
 export class ImoveisController {
   private readonly logger = new Logger(ImoveisController.name);
 
+  /** protocolo -> { criterios, enviados, quando } */
+  private paginacao = new Map<
+    string,
+    { criterios: string; enviados: Set<string>; quando: number }
+  >();
+  private readonly VALIDADE_PAGINACAO_MS = 24 * 60 * 60 * 1000;
+
   constructor(private readonly imoveisService: ImoveisService) {}
 
   @Get()
@@ -26,6 +33,7 @@ export class ImoveisController {
     @Headers('x-vagas-min') xVagasMin: string | undefined,
     @Headers('x-offset') xOffset: string | undefined,
     @Headers('x-limit') xLimit: string | undefined,
+    @Headers('x-protocolo') xProtocolo: string | undefined,
     @Query('bairro') qBairro?: string,
     @Query('tipo') qTipo?: string,
     @Query('dormitorios') qDormitorios?: string,
@@ -35,6 +43,7 @@ export class ImoveisController {
     @Query('token') qToken?: string,
     @Query('offset') qOffset?: string,
     @Query('limit') qLimit?: string,
+    @Query('protocolo') qProtocolo?: string,
   ) {
     const bairro = xBairro || qBairro;
     const tipo = xTipo || qTipo;
@@ -98,8 +107,39 @@ export class ImoveisController {
       vagasMin: vagasMinNum,
     });
 
-    const resultados = todos.slice(offsetNum, offsetNum + limitNum);
-    const temMais = todos.length > offsetNum + limitNum;
+    const protocolo = (xProtocolo || qProtocolo || '').trim();
+    let resultados: any[];
+    let temMais: boolean;
+
+    if (protocolo) {
+      const criterios = JSON.stringify({
+        bairro: bairro ?? null,
+        tipo: tipo ?? null,
+        dormitorios: dormitoriosNum ?? null,
+        dormitoriosExato,
+        valorMax: valorMaxNum ?? null,
+        vagasMin: vagasMinNum ?? null,
+      });
+
+      this.limparPaginacaoExpirada();
+
+      let estado = this.paginacao.get(protocolo);
+      if (!estado || estado.criterios !== criterios) {
+        estado = { criterios, enviados: new Set<string>(), quando: Date.now() };
+        this.paginacao.set(protocolo, estado);
+      }
+
+      const naoEnviados = todos.filter(
+        (im) => !estado!.enviados.has(String(im.codigo)),
+      );
+      resultados = naoEnviados.slice(0, limitNum);
+      resultados.forEach((im) => estado!.enviados.add(String(im.codigo)));
+      estado.quando = Date.now();
+      temMais = naoEnviados.length > limitNum;
+    } else {
+      resultados = todos.slice(offsetNum, offsetNum + limitNum);
+      temMais = todos.length > offsetNum + limitNum;
+    }
 
     const incluirFechamento = !limit;
     const buscaIndividual = limitNum === 1;
@@ -201,6 +241,16 @@ export class ImoveisController {
     }
 
     return mensagens;
+  }
+
+  /** Remove protocolos sem uso há mais de 24h. */
+  private limparPaginacaoExpirada(): void {
+    const agora = Date.now();
+    for (const [chave, estado] of this.paginacao) {
+      if (agora - estado.quando > this.VALIDADE_PAGINACAO_MS) {
+        this.paginacao.delete(chave);
+      }
+    }
   }
 
   private validarToken(authHeader: string | undefined, xApiToken: string | undefined, qToken: string | undefined) {
