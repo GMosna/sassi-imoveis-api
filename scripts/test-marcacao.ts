@@ -45,18 +45,18 @@ console.log('--- configuração ---');
   igual('ativo sem token fica desligado', semToken.modo, 'desligado');
   confere('ativo sem token avisa o problema', semToken.problemas.some((p) => p.includes('token')));
 
-  igual('ativo com RDCRM_TOKEN', lerConfig({ MARCACAO_MODO: 'ativo', RDCRM_TOKEN: 'abc' }).modo, 'ativo');
+  igual('RDCRM_TOKEN sozinho não liga a marcação', lerConfig({ MARCACAO_MODO: 'ativo', RDCRM_TOKEN: 'abc' }).modo, 'desligado');
   igual(
-    'MARCACAO_RDCRM_TOKEN tem preferência',
-    lerConfig({ MARCACAO_MODO: 'ativo', RDCRM_TOKEN: 'a', MARCACAO_RDCRM_TOKEN: 'b' }).token,
-    'b',
+    'ativo com MARCACAO_RDCRM_TOKEN',
+    [lerConfig({ MARCACAO_MODO: 'ativo', MARCACAO_RDCRM_TOKEN: 'b' }).modo, lerConfig({ MARCACAO_MODO: 'ativo', MARCACAO_RDCRM_TOKEN: 'b' }).token],
+    ['ativo', 'b'],
   );
-  igual('modo inválido fica desligado', lerConfig({ MARCACAO_MODO: 'ligado', RDCRM_TOKEN: 'a' }).modo, 'desligado');
-  igual('teste sem EMAILS_TESTE fica desligado', lerConfig({ MARCACAO_MODO: 'teste', RDCRM_TOKEN: 'a' }).modo, 'desligado');
-  igual('intervalo de 1 min é recusado', lerConfig({ MARCACAO_MODO: 'simulacao', RDCRM_TOKEN: 'a', INTERVALO_MINUTOS: '1' }).modo, 'desligado');
+  igual('modo inválido fica desligado', lerConfig({ MARCACAO_MODO: 'ligado', MARCACAO_RDCRM_TOKEN: 'a' }).modo, 'desligado');
+  igual('teste sem EMAILS_TESTE fica desligado', lerConfig({ MARCACAO_MODO: 'teste', MARCACAO_RDCRM_TOKEN: 'a' }).modo, 'desligado');
+  igual('intervalo de 1 min é recusado', lerConfig({ MARCACAO_MODO: 'simulacao', MARCACAO_RDCRM_TOKEN: 'a', INTERVALO_MINUTOS: '1' }).modo, 'desligado');
   igual(
     'Funil de Testes em FUNIS_PERMITIDOS é recusado',
-    lerConfig({ MARCACAO_MODO: 'ativo', RDCRM_TOKEN: 'a', FUNIS_PERMITIDOS: '6a723eee480c33002099c27d' }).modo,
+    lerConfig({ MARCACAO_MODO: 'ativo', MARCACAO_RDCRM_TOKEN: 'a', FUNIS_PERMITIDOS: '6a723eee480c33002099c27d' }).modo,
     'desligado',
   );
   igual(
@@ -184,6 +184,18 @@ class CrmFalso implements ApiCrm {
   modoPut: 'mescla' | 'substitui' = 'mescla';
   falharObter = new Set<string>();
   fecharAoReler = new Set<string>();
+  /** Negociação que aparece em outro funil quando é relida. */
+  moverAoReler = new Map<string, string>();
+  /** PUT que dá erro: antes de gravar ou depois de gravar (como um timeout). */
+  falharPut: 'antes' | 'depois' | null = null;
+  /** Depois de um PUT nesta negociação, a releitura falha. */
+  falharObterDepoisDoPut = new Set<string>();
+  /** Simula um CRM que ignora os filtros. */
+  listaIgnoraData = false;
+  duplicarLista = false;
+  buscaIgnoraFiltro = false;
+  tarefasIgnoraFiltro = false;
+  private gravadas = new Set<string>();
 
   novaNegociacao(funil: string, quando: Date, extra: Partial<NegociacaoCrm> = {}): string {
     const id = oid(quando);
@@ -232,8 +244,9 @@ class CrmFalso implements ApiCrm {
   }
   async listarNegociacoesCriadasEntre(inicio: Date, fim: Date): Promise<NegociacaoCrm[]> {
     this.chamadas++;
-    return [...this.negociacoes.values()]
+    const lista = [...this.negociacoes.values()]
       .filter((d) => {
+        if (this.listaIgnoraData) return true;
         const t = Date.parse(d.created_at as string);
         return t >= inicio.getTime() && t <= fim.getTime();
       })
@@ -244,17 +257,24 @@ class CrmFalso implements ApiCrm {
         const contatos = this.contatos.filter((c) => c.negociacoes.includes(d.id as string));
         return { ...semFunil, contacts: contatos.map((c) => ({ phones: c.phones, emails: c.emails })) };
       });
+    return this.duplicarLista ? [...lista, ...copia(lista)] : lista;
   }
   async obterNegociacao(id: string): Promise<NegociacaoCrm> {
     this.chamadas++;
     this.obterChamados.push(id);
     if (this.falharObter.has(id)) throw new Error('falha simulada do CRM');
+    if (this.gravadas.has(id) && this.falharObterDepoisDoPut.has(id)) throw new Error('falha simulada depois do PUT');
     const d = this.negociacoes.get(id);
     if (!d) throw new Error('negociação inexistente');
     const c = copia(d);
     if (this.fecharAoReler.has(id)) {
       c.win = false;
       c.closed_at = AGORA.toISOString();
+    }
+    const outroFunil = this.moverAoReler.get(id);
+    if (outroFunil) {
+      c.deal_pipeline = { id: outroFunil, name: NOME_FUNIL[outroFunil] };
+      c.deal_stage = { id: ETAPA[outroFunil], name: 'Atendimento' };
     }
     return c;
   }
@@ -266,7 +286,9 @@ class CrmFalso implements ApiCrm {
     this.chamadas++;
     this.buscasTelefone.push(telefone);
     // Como o CRM real: compara só dígitos e acha o número dentro do gravado
-    return this.contatos.filter((c) => c.phones.some((p) => digitos(p.phone).includes(telefone))).map((c) => this.paraBusca(c));
+    return this.contatos
+      .filter((c) => this.buscaIgnoraFiltro || c.phones.some((p) => digitos(p.phone).includes(telefone)))
+      .map((c) => this.paraBusca(c));
   }
   async buscarContatosPorEmail(email: string): Promise<ContatoCrm[]> {
     this.chamadas++;
@@ -277,23 +299,28 @@ class CrmFalso implements ApiCrm {
   }
   async tarefasDaNegociacao(id: string): Promise<TarefaCrm[]> {
     this.chamadas++;
-    return this.tarefas.filter((t) => t.deal_id === id).map((t) => ({ subject: t.subject }));
+    return this.tarefas
+      .filter((t) => this.tarefasIgnoraFiltro || t.deal_id === id)
+      .map((t) => ({ subject: t.subject, deal_id: t.deal_id }));
   }
   async atualizarCamposPersonalizados(id: string, campos: CampoParaGravar[]): Promise<void> {
     this.chamadas++;
     this.puts.push({ id, campos: copia(campos) });
+    if (this.falharPut === 'antes') throw new Error('falha simulada no PUT');
+    this.gravadas.add(id);
     const d = this.negociacoes.get(id) as NegociacaoCrm;
     if (this.modoPut === 'substitui') {
       d.deal_custom_fields = campos.map((c) => ({ custom_field_id: c.custom_field_id, value: c.value }));
-      return;
+    } else {
+      const lista = d.deal_custom_fields ?? [];
+      for (const c of campos) {
+        const existente = lista.find((x) => x.custom_field_id === c.custom_field_id);
+        if (existente) existente.value = c.value;
+        else lista.push({ custom_field_id: c.custom_field_id, value: c.value });
+      }
+      d.deal_custom_fields = lista;
     }
-    const lista = d.deal_custom_fields ?? [];
-    for (const c of campos) {
-      const existente = lista.find((x) => x.custom_field_id === c.custom_field_id);
-      if (existente) existente.value = c.value;
-      else lista.push({ custom_field_id: c.custom_field_id, value: c.value });
-    }
-    d.deal_custom_fields = lista;
+    if (this.falharPut === 'depois') throw new Error('falha simulada depois de gravar (timeout)');
   }
   async criarTarefa(tarefa: NovaTarefa): Promise<void> {
     this.chamadas++;
@@ -390,7 +417,7 @@ async function novoRegistro(): Promise<Registro> {
 }
 
 function config(env: Record<string, string>): ConfigMarcacao {
-  const c = lerConfig({ RDCRM_TOKEN: 'token-falso', ...env });
+  const c = lerConfig({ MARCACAO_RDCRM_TOKEN: 'token-falso', ...env });
   if (c.problemas.length) throw new Error(`config de teste inválida: ${c.problemas.join('; ')}`);
   return c;
 }
@@ -548,6 +575,172 @@ async function testes() {
   }
 
   // -------------------------------------------------------------------------
+  // Casos apontados na revisão independente
+  console.log('\n--- revisão: a negociação mudou de funil entre a lista e a gravação ---');
+  {
+    const { crm, ids } = montarCenario();
+    crm.moverAoReler.set(ids.N2, CL);
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    await m.rodada();
+    const d = registro.ultimas(200).find((x) => x.negociacao === ids.N2);
+    igual('N2 não é gravada', [crm.puts.some((p) => p.id === ids.N2), d?.acao, d?.observacao], [false, 'nada gravado', 'a negociação mudou de funil antes da gravação']);
+    igual('N2 sem tarefa', crm.tarefas.filter((t) => t.deal_id === ids.N2).length, 0);
+  }
+
+  console.log('\n--- revisão: PUT dá erro mas grava (como um timeout) ---');
+  {
+    const { crm, ids } = montarCenario();
+    crm.falharPut = 'depois';
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    const r = await m.rodada();
+    igual('todas processadas, sem disjuntor', [r.processadas, r.erros, m.disjuntor], [10, 0, null]);
+    const d = registro.ultimas(200).find((x) => x.negociacao === ids.N2);
+    confere('registra que o CRM deu erro mas gravou', (d?.observacao ?? '').includes('o CRM respondeu com erro, mas gravou'), d);
+    igual('N2 ganhou a tarefa', crm.tarefas.filter((t) => t.deal_id === ids.N2).length, 1);
+  }
+
+  console.log('\n--- revisão: PUT dá erro e não grava: tenta de novo na próxima rodada ---');
+  {
+    const { crm, ids } = montarCenario();
+    crm.falharPut = 'antes';
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    const r1 = await m.rodada();
+    igual('rodada 1: as 8 que gravariam ficam para depois', [r1.processadas, r1.erros, registro.jaProcessada(ids.N2), m.disjuntor], [2, 8, false, null]);
+    crm.falharPut = null;
+    const r2 = await m.rodada();
+    igual('rodada 2: gravam', [r2.processadas, r2.gravadas, registro.jaProcessada(ids.N2)], [8, 8, true]);
+  }
+
+  console.log('\n--- revisão: PUT apaga outros campos e dá erro: o disjuntor liga mesmo assim ---');
+  {
+    const { crm, ids } = montarCenario();
+    crm.modoPut = 'substitui';
+    crm.falharPut = 'depois';
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    await m.rodada();
+    igual('uma gravação só e disjuntor ligado', [crm.puts.length, Boolean(m.disjuntor)], [1, true]);
+    igual('nenhuma tarefa nova', crm.tarefas.filter((t) => t.deal_id !== ids.N11).length, 0);
+  }
+
+  console.log('\n--- revisão: sem como conferir depois de gravar, o disjuntor liga e fica guardado ---');
+  {
+    const { crm, ids } = montarCenario();
+    crm.falharObterDepoisDoPut.add(ids.N11); // N11 é a primeira da rodada (a mais antiga)
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    await m.rodada();
+    igual('disjuntor ligado e N11 fica para a próxima rodada', [Boolean(m.disjuntor), registro.jaProcessada(ids.N11), crm.puts.length], [true, false, 1]);
+    igual('as outras só simulam', registro.ultimas(200).filter((d) => (d.observacao ?? '').startsWith('gravação suspensa')).length, 9);
+
+    const arquivo = (registro as unknown as { arquivo: string }).arquivo;
+    const depoisDeReiniciar = new Registro(arquivo);
+    await depoisDeReiniciar.carregar();
+    confere('disjuntor guardado em disco', Boolean(depoisDeReiniciar.disjuntor), depoisDeReiniciar.disjuntor);
+    const m2 = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, depoisDeReiniciar, log, () => AGORA);
+    await m2.rodada();
+    igual('depois de reiniciar continua sem gravar', crm.puts.length, 1);
+    igual('religar libera a gravação', [await m2.religar(), m2.disjuntor], [true, null]);
+    const liberado = new Registro(arquivo);
+    await liberado.carregar();
+    igual('liberação guardada em disco', liberado.disjuntor, null);
+  }
+
+  console.log('\n--- revisão: o CRM ignora o filtro de data ---');
+  {
+    const { crm, ids } = montarCenario();
+    crm.listaIgnoraData = true;
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    const r = await m.rodada();
+    igual('só as das últimas 24 h', [r.processadas, registro.jaProcessada(ids.P2), crm.puts.some((p) => p.id === ids.P2)], [10, false, false]);
+  }
+
+  console.log('\n--- revisão: a lista repete a mesma negociação ---');
+  {
+    const { crm } = montarCenario();
+    crm.duplicarLista = true;
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    const r = await m.rodada();
+    igual('cada uma processada uma vez', [r.processadas, crm.puts.length], [10, 8]);
+  }
+
+  console.log('\n--- revisão: o CRM devolve cadastros sem o telefone buscado ---');
+  {
+    const { crm, ids } = montarCenario();
+    crm.buscaIgnoraFiltro = true;
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'simulacao' }), crm, registro, log, () => AGORA);
+    await m.rodada();
+    igual(
+      'tipos iguais aos de um CRM que filtra',
+      tiposPorId(registro, { N1: ids.N1, N2: ids.N2, N6: ids.N6, N8: ids.N8, P8: ids.P8 }),
+      { N1: 'Novo/simulou', N2: 'Retorno/simulou', N6: 'Novo/simulou', N8: 'Novo/simulou', P8: 'Possível duplicado/simulou' },
+    );
+  }
+
+  console.log('\n--- revisão: tarefa de outra negociação com o mesmo assunto não conta ---');
+  {
+    const { crm, ids } = montarCenario();
+    crm.tarefasIgnoraFiltro = true;
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    await m.rodada();
+    igual('N2 ganha a tarefa mesmo com a da N11 na lista', crm.tarefas.filter((t) => t.deal_id === ids.N2).length, 1);
+    igual('N11 continua com uma só', crm.tarefas.filter((t) => t.deal_id === ids.N11).length, 1);
+  }
+
+  console.log('\n--- revisão: anterior aberta mais antiga que 10 fechadas ---');
+  {
+    const crm = new CrmFalso();
+    const aberta = crm.novaNegociacao(VT, diasAtras(200), { user: { id: U2, name: NOME_USUARIO[U2] } });
+    const fechadas = Array.from({ length: 11 }, (_, i) => {
+      const id = crm.novaNegociacao(LB, diasAtras(150 - i * 10));
+      crm.fechar(id, false, diasAtras(149 - i * 10));
+      return id;
+    });
+    const nova = crm.novaNegociacao(LB, minAtras(30));
+    crm.novoContato([aberta, ...fechadas, nova], '19991119999');
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    await m.rodada();
+    igual('continua Possível duplicado', tiposPorId(registro, { nova }), { nova: 'Possível duplicado/gravou' });
+    igual('tarefa para os dois', (crm.tarefas.find((t) => t.deal_id === nova) as NovaTarefa | undefined)?.user_ids, [U1, U2]);
+  }
+
+  console.log('\n--- revisão: lead de teste não vira tarefa para responsável real ---');
+  {
+    const crm = new CrmFalso();
+    const real = crm.novaNegociacao(LB, diasAtras(5), { user: { id: U2, name: NOME_USUARIO[U2] } });
+    const teste = crm.novaNegociacao(FT, minAtras(30));
+    crm.novoContato([real, teste], '19991118888', 'teste1@sassiimoveis.com.br');
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'teste', EMAILS_TESTE: 'teste1@sassiimoveis.com.br' }), crm, registro, log, () => AGORA);
+    await m.rodada();
+    igual('vira Retorno, não Possível duplicado', tiposPorId(registro, { teste }), { teste: 'Retorno/gravou' });
+    igual('tarefa só para o responsável do teste', (crm.tarefas.find((t) => t.deal_id === teste) as NovaTarefa | undefined)?.user_ids, [U1]);
+    igual('negociação real intocada', crm.puts.some((p) => p.id === real), false);
+  }
+
+  console.log('\n--- revisão: telefone gigante não trava a API ---');
+  {
+    const crm = new CrmFalso();
+    const id = crm.novaNegociacao(LB, minAtras(30));
+    crm.novoContato([id], ' '.repeat(5000) + '19991117777');
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'simulacao' }), crm, registro, log, () => AGORA);
+    const inicio = Date.now();
+    await m.rodada();
+    const ms = Date.now() - inicio;
+    confere(`rodada rápida (${ms} ms)`, ms < 500, ms);
+    igual('telefone ignorado, sem busca', crm.buscasTelefone, []);
+  }
+
+  // -------------------------------------------------------------------------
   console.log('\n--- CRM fora do ar: a rodada falha e registra o erro ---');
   {
     const { crm } = montarCenario();
@@ -654,7 +847,51 @@ async function testes() {
     } catch (e) {
       erro422 = (e as Error).message;
     }
-    confere('token apagado do corpo de erro do CRM', erro422.includes('HTTP 422') && erro422.includes('***') && !erro422.includes(TOKEN), erro422);
+    confere('erro do CRM sem o corpo da resposta e sem token', erro422.includes('HTTP 422') && !erro422.includes('obrigatório') && !erro422.includes(TOKEN), erro422);
+
+    chamadas.length = 0;
+    esperas.length = 0;
+    respostas.push({ status: 429, headers: { 'retry-after': '2' } });
+    let erro429 = '';
+    try {
+      await cliente().atualizarCamposPersonalizados('d1', []);
+    } catch (e) {
+      erro429 = (e as Error).message;
+    }
+    igual('429 no PUT: não espera nem repete', [chamadas.length, esperas.length, erro429.includes('HTTP 429')], [1, 0, true]);
+
+    esperas.length = 0;
+    respostas.push({ status: 429, headers: { 'retry-after': '9999' } }, { status: 200, corpo: '{"tasks":[]}' });
+    await cliente().tarefasDaNegociacao('d1');
+    confere('Retry-After limitado a 2 minutos', esperas.includes(120000) && !esperas.includes(9999000), esperas);
+
+    chamadas.length = 0;
+    respostas.push({ status: 200, corpo: '' }, { status: 200, corpo: '' }, { status: 200, corpo: '' });
+    let erroVazio = '';
+    try {
+      await cliente().buscarContatosPorEmail('a@b.com');
+    } catch (e) {
+      erroVazio = (e as Error).message;
+    }
+    igual('resposta vazia: repete e falha', [chamadas.length, erroVazio.includes('resposta vazia')], [3, true]);
+
+    respostas.push({ status: 200, corpo: '{"total":0}' });
+    let erroSemLista = '';
+    try {
+      await cliente().buscarContatosPorTelefone('19991110002');
+    } catch (e) {
+      erroSemLista = (e as Error).message;
+    }
+    confere('resposta sem a lista é erro, não lista vazia', erroSemLista.includes('sem "contacts"'), erroSemLista);
+
+    respostas.push({ status: 200, corpo: '{"id":"outra"}' });
+    let erroOutra = '';
+    try {
+      await cliente().obterNegociacao('d1');
+    } catch (e) {
+      erroOutra = (e as Error).message;
+    }
+    confere('negociação diferente da pedida é erro', erroOutra.includes('não é esta negociação'), erroOutra);
   }
 
   console.log(`\n${falhas === 0 ? 'ALL PASS' : falhas + ' FAILED'}`);

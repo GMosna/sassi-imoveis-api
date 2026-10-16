@@ -109,22 +109,35 @@ Prazo das tarefas: 1 hora útil (segunda a sexta, 8h às 18h).
 
 **Modos** (`MARCACAO_MODO`): `desligado` (padrão, não faz nada),
 `simulacao` (só lê e registra o que faria), `teste` (só grava no Funil de
-Testes, em contatos de `EMAILS_TESTE`) e `ativo`. Qualquer variável inválida
-deixa o módulo desligado. As variáveis estão em `.env.example`.
+Testes, em contatos de `EMAILS_TESTE`) e `ativo`. O token vai em
+`MARCACAO_RDCRM_TOKEN` (o `RDCRM_TOKEN` do `/registrar-lead` não liga a
+marcação). Qualquer variável inválida deixa o módulo desligado. As
+variáveis estão em `.env.example`.
 
-**Cuidados no código:** relê a negociação antes de gravar e não grava se
-ela já foi ganha ou perdida; não troca um "Tipo de entrada" preenchido à
-mão (só cria a tarefa e registra a diferença); confere se a tarefa já
-existe; depois de gravar, confere se os outros campos continuam iguais e,
-se algum mudou, para de gravar até a API reiniciar. O token e os dados dos
-clientes não vão para o log.
+**Cuidados no código:**
+
+- Relê a negociação antes de gravar: se mudou de funil, foi ganha ou
+  perdida, não grava nada.
+- Não troca um "Tipo de entrada" preenchido à mão: só cria a tarefa e
+  registra a diferença.
+- Confere se a tarefa já existe antes de criar.
+- Depois de qualquer gravação, relê e confere se os outros campos
+  continuam iguais. Se algum mudou, ou se não deu para conferir, para de
+  gravar. Essa parada fica guardada em disco e só é liberada por
+  `POST /marcacao/religar`, depois de conferir o CRM.
+- Lead de teste (Funil de Testes) só é comparado com o Funil de Testes.
+- O token e os dados dos clientes não vão para o log.
 
 **Acompanhamento** (mesmo `API_TOKEN` das outras rotas):
 
-- `GET /marcacao`: modo, última rodada e as últimas 50 decisões.
+- `GET /marcacao`: modo, última rodada, parada de gravação e as últimas
+  50 decisões.
 - `POST /marcacao/historico?dias=30`: classifica, sem gravar nada, as
-  negociações dos últimos dias. É o teste com o histórico.
+  negociações dos últimos dias (até 30). É o teste com o histórico. A
+  situação das negociações anteriores é a de hoje, então um possível
+  duplicado da época pode aparecer como retorno.
 - `GET /marcacao/historico`: andamento e resultado dessa leitura.
+- `POST /marcacao/religar`: libera a gravação depois de um ALERTA.
 
 **Para desligar:** `MARCACAO_MODO=desligado` no Railway (novo deploy). Para
 desfazer o código, basta voltar ao commit anterior: o resto da API não

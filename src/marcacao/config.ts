@@ -81,8 +81,9 @@ export function lerConfig(env: Record<string, string | undefined>): ConfigMarcac
   if (MODOS.includes(modoBruto)) modo = modoBruto as Modo;
   else problemas.push('MARCACAO_MODO deve ser desligado, simulacao, teste ou ativo');
 
-  // Variável própria primeiro: assim dá para ligar a marcação sem reativar o /registrar-lead
-  const token = (env.MARCACAO_RDCRM_TOKEN || env.RDCRM_TOKEN || '').trim();
+  // Variável só da marcação: ligar a marcação não reativa o /registrar-lead,
+  // que usa RDCRM_TOKEN (decisão 7 do planejamento)
+  const token = (env.MARCACAO_RDCRM_TOKEN || '').trim();
 
   const intervaloMinutos = numero(env.INTERVALO_MINUTOS, 5, 2, 60, 'INTERVALO_MINUTOS', problemas);
   const esperaMinutos = numero(env.ESPERA_TAREFA_MINUTOS, 10, 0, 240, 'ESPERA_TAREFA_MINUTOS', problemas);
@@ -105,7 +106,7 @@ export function lerConfig(env: Record<string, string | undefined>): ConfigMarcac
   const arquivoRegistro = path.join(env.CACHE_DIR || '/tmp', 'marcacao-registro.json');
 
   if (modo !== 'desligado' && !token) {
-    problemas.push('falta o token do CRM (MARCACAO_RDCRM_TOKEN ou RDCRM_TOKEN)');
+    problemas.push('falta o token do CRM (MARCACAO_RDCRM_TOKEN)');
   }
   if (token && /\s/.test(token)) problemas.push('o token do CRM tem espaços');
   if (!ID_CRM.test(campoTipoEntrada)) problemas.push('CAMPO_TIPO_ENTRADA_ID inválido');

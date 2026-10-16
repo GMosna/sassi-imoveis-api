@@ -6,8 +6,9 @@ import { MarcacaoService } from './marcacao.service';
  * Rotas de acompanhamento da marcação, protegidas pelo mesmo API_TOKEN das
  * outras rotas. Nenhuma delas grava no CRM.
  *   GET  /marcacao                    -> modo, última rodada e últimas 50 decisões
- *   POST /marcacao/historico?dias=30  -> começa a leitura do histórico (só leitura)
+ *   POST /marcacao/historico?dias=30  -> começa a leitura do histórico (só leitura, até 30 dias)
  *   GET  /marcacao/historico          -> andamento e resultado da leitura do histórico
+ *   POST /marcacao/religar            -> libera a gravação depois de um ALERTA, já conferido no CRM
  */
 @Controller('marcacao')
 export class MarcacaoController {
@@ -32,8 +33,18 @@ export class MarcacaoController {
   ) {
     validarToken(authHeader, xApiToken, qToken);
     const n = dias === undefined ? 30 : Number(dias);
-    if (!Number.isInteger(n) || n < 1 || n > 90) throw new BadRequestException('dias deve ser um número inteiro de 1 a 90');
+    if (!Number.isInteger(n) || n < 1 || n > 30) throw new BadRequestException('dias deve ser um número inteiro de 1 a 30');
     return this.marcacao.iniciarHistorico(n);
+  }
+
+  @Post('religar')
+  religar(
+    @Headers('authorization') authHeader: string | undefined,
+    @Headers('x-api-token') xApiToken: string | undefined,
+    @Query('token') qToken?: string,
+  ) {
+    validarToken(authHeader, xApiToken, qToken);
+    return this.marcacao.religar();
   }
 
   @Get('historico')

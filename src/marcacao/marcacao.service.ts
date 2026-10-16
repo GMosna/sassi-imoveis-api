@@ -85,6 +85,13 @@ export class MarcacaoService implements OnModuleInit, OnModuleDestroy {
     return { iniciado: true };
   }
 
+  /** Libera a gravação depois de um alerta, quando alguém já conferiu o CRM. */
+  async religar(): Promise<{ religado: boolean; motivo?: string }> {
+    if (!this.marcador) return { religado: false, motivo: 'a marcação está desligada' };
+    const religou = await this.marcador.religar();
+    return religou ? { religado: true } : { religado: false, motivo: 'a gravação não estava suspensa' };
+  }
+
   async historico(): Promise<unknown> {
     if (this.marcador?.historico) return this.marcador.historico;
     try {
@@ -101,7 +108,7 @@ export class MarcacaoService implements OnModuleInit, OnModuleDestroy {
       problemasDeConfiguracao: this.cfg.problemas,
       intervaloMinutos: this.cfg.intervaloMinutos,
       esperaMinutos: this.cfg.esperaMinutos,
-      gravacaoSuspensa: this.marcador?.disjuntor ?? null,
+      gravacaoSuspensa: this.registro.disjuntor,
       rodando: this.rodando,
       historicoRodando: this.marcador?.historico?.rodando ?? false,
       ultimaRodada: this.marcador?.ultimaRodada ?? null,

@@ -23,11 +23,18 @@ export interface Decisao {
   observacao?: string;
 }
 
+/** Gravação suspensa: guardada em disco para continuar suspensa depois de reiniciar. */
+export interface Disjuntor {
+  motivo: string;
+  em: string;
+}
+
 const MAXIMO_DECISOES = 200;
 
 export class Registro {
   private processadas = new Map<string, string>();
   private decisoes: Decisao[] = [];
+  private _disjuntor: Disjuntor | null = null;
 
   constructor(
     private readonly arquivo: string,
@@ -39,6 +46,7 @@ export class Registro {
       const dados = JSON.parse(await fs.readFile(this.arquivo, 'utf-8'));
       if (Array.isArray(dados?.processadas)) this.processadas = new Map(dados.processadas);
       if (Array.isArray(dados?.decisoes)) this.decisoes = dados.decisoes.slice(0, MAXIMO_DECISOES);
+      if (dados?.disjuntor && typeof dados.disjuntor.motivo === 'string') this._disjuntor = dados.disjuntor;
     } catch {
       // Primeira execução, ou arquivo ilegível: começa vazio
     }
@@ -51,12 +59,21 @@ export class Registro {
       const conteudo = JSON.stringify({
         processadas: Array.from(this.processadas.entries()),
         decisoes: this.decisoes,
+        disjuntor: this._disjuntor,
       });
       await fs.writeFile(temporario, conteudo, 'utf-8');
       await fs.rename(temporario, this.arquivo);
     } catch (err) {
       this.avisar(`não consegui salvar o registro da marcação: ${err instanceof Error ? err.message : err}`);
     }
+  }
+
+  get disjuntor(): Disjuntor | null {
+    return this._disjuntor;
+  }
+
+  definirDisjuntor(disjuntor: Disjuntor | null): void {
+    this._disjuntor = disjuntor;
   }
 
   jaProcessada(id: string): boolean {

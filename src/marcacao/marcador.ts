@@ -22,11 +22,15 @@ import { ASSUNTO_DUPLICADO, ASSUNTO_RETORNO, textoDuplicado, textoRetorno } from
  * Cuidados para não quebrar nada:
  * - só grava nos modos teste e ativo, e no modo teste só no Funil de Testes
  *   com contatos da lista EMAILS_TESTE;
- * - relê a negociação logo antes de gravar: ganha ou perdida, não grava nada;
+ * - relê a negociação logo antes de gravar: se mudou de funil, foi ganha ou
+ *   perdida, não grava nada;
  * - campo já preenchido por alguém: não troca o valor (só cria a tarefa);
- * - depois de gravar, confere se os outros campos continuam iguais; se algum
- *   mudou, para de gravar até a API reiniciar (disjuntor);
- * - antes de criar a tarefa, confere se ela já existe.
+ * - depois de qualquer gravação, relê e confere se os outros campos continuam
+ *   iguais; se algum mudou, ou se não der para conferir, para de gravar
+ *   (disjuntor guardado em disco, liberado só por POST /marcacao/religar);
+ * - antes de criar a tarefa, confere se ela já existe;
+ * - negociação do Funil de Testes só é comparada com o Funil de Testes, para
+ *   um teste nunca gerar tarefa para responsável de negociação real.
  */
 
 export interface LogMarcacao {
@@ -74,16 +78,21 @@ export interface ResumoRodada {
 
 const JANELA_HORAS = 24;
 const MAXIMO_POR_RODADA = 40;
-const MAXIMO_RELACIONADAS = 10;
+const MAXIMO_ABERTAS = 15;
+const MAXIMO_FECHADAS = 10;
 const RECARREGAR_LISTAS_MS = 6 * 3600_000;
 const MAXIMO_TENTATIVAS = 3;
 const GUARDAR_PROCESSADAS_DIAS = 3;
 const MAXIMO_PAGINAS_HISTORICO = 25;
+/** Textos maiores não são telefone nem e-mail de verdade; a extração do telefone fica lenta com textos longos. */
+const MAXIMO_TELEFONE = 40;
+const MAXIMO_EMAIL = 254;
 
 export const idDe = (x: { id?: string; _id?: string } | null | undefined): string | null =>
   x ? String(x.id ?? x._id ?? '') || null : null;
 
 const mensagem = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+const dormir = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 function unicos<T>(itens: (T | null | undefined)[]): T[] {
   return [...new Set(itens.filter((x): x is T => x !== null && x !== undefined))];
@@ -125,12 +134,45 @@ export function camposAlterados(antes: CampoPersonalizadoCrm[], depois: CampoPer
   return alterados;
 }
 
+/** Telefones (55DDNUMERO) e e-mails (minúsculos) dos contatos, ignorando textos absurdos. */
+function dadosDosContatos(contatos: ContatoCrm[]): { telefones: string[]; emails: string[] } {
+  const telefones = unicos(
+    contatos.flatMap((c) =>
+      (c.phones ?? []).map((p) => {
+        const t = p?.phone;
+        return typeof t === 'string' && t.length <= MAXIMO_TELEFONE ? normalizarTelefone(t) : null;
+      }),
+    ),
+  );
+  const emails = unicos(
+    contatos.flatMap((c) =>
+      (c.emails ?? []).map((e) => {
+        const v = e?.email;
+        return typeof v === 'string' && v.length <= MAXIMO_EMAIL ? normalizarEmail(v) : null;
+      }),
+    ),
+  );
+  return { telefones, emails };
+}
+
+function contatoTemTelefone(c: ContatoCrm, digitosBuscados: string): boolean {
+  return (c.phones ?? []).some(
+    (p) =>
+      typeof p?.phone === 'string' &&
+      p.phone.length <= MAXIMO_TELEFONE &&
+      p.phone.replace(/\D/g, '').includes(digitosBuscados),
+  );
+}
+
+function contatoTemEmail(c: ContatoCrm, email: string): boolean {
+  return (c.emails ?? []).some((e) => typeof e?.email === 'string' && e.email.trim().toLowerCase() === email);
+}
+
 export class Marcador {
   ultimaRodada: ResumoRodada | null = null;
   historico: EstadoHistorico | null = null;
-  /** Motivo para ter parado de gravar; null enquanto está tudo certo. */
-  disjuntor: string | null = null;
 
+  private emRodada = false;
   private funis = new Map<string, string>();
   private etapaParaFunil = new Map<string, string>();
   private motivosPerda = new Map<string, string>();
@@ -144,6 +186,27 @@ export class Marcador {
     private readonly log: LogMarcacao,
     private readonly relogio: () => Date = () => new Date(),
   ) {}
+
+  /** Motivo para ter parado de gravar (guardado em disco); null enquanto está tudo certo. */
+  get disjuntor(): string | null {
+    return this.registro.disjuntor?.motivo ?? null;
+  }
+
+  /** Libera a gravação depois que alguém conferiu o CRM. */
+  async religar(): Promise<boolean> {
+    if (!this.registro.disjuntor) return false;
+    this.registro.definirDisjuntor(null);
+    await this.registro.salvar();
+    this.log.aviso('gravação liberada de novo pela rota /marcacao/religar');
+    return true;
+  }
+
+  private async dispararDisjuntor(motivo: string): Promise<void> {
+    if (this.registro.disjuntor) return;
+    this.registro.definirDisjuntor({ motivo, em: this.relogio().toISOString() });
+    this.log.erro(`ALERTA: ${motivo}. A marcação parou de gravar até alguém liberar em POST /marcacao/religar.`);
+    await this.registro.salvar();
+  }
 
   async rodada(): Promise<ResumoRodada> {
     const inicio = this.relogio();
@@ -165,12 +228,14 @@ export class Marcador {
       erro: null,
     };
     this.ultimaRodada = resumo;
+    this.emRodada = true;
     try {
       await this.executarRodada(inicio, resumo);
     } catch (err) {
       resumo.erro = mensagem(err);
       throw err;
     } finally {
+      this.emRodada = false;
       resumo.fim = this.relogio().toISOString();
       resumo.chamadas = this.api.chamadas - chamadasAntes;
     }
@@ -192,14 +257,19 @@ export class Marcador {
     resumo.lidas = lista.length;
 
     const funisDaMarcacao = new Set([...this.cfg.funisPermitidos, this.cfg.funilTestes]);
+    const vistas = new Set<string>();
     const prontas: NegociacaoCrm[] = [];
     for (const d of lista) {
       const id = idDe(d);
+      if (!id || vistas.has(id)) continue;
+      vistas.add(id);
       const funil = this.funilDe(d);
       // Etapa criada depois da última leitura dos funis: relê na próxima rodada
       if (!funil && idDe(d.deal_stage ?? null)) this.listasCarregadasEm = 0;
       const criada = Date.parse(d.created_at ?? '');
-      if (!id || !funil || !funisDaMarcacao.has(funil) || !Number.isFinite(criada)) continue;
+      if (!funil || !funisDaMarcacao.has(funil) || !Number.isFinite(criada)) continue;
+      // Não depende só do filtro de data do CRM
+      if (criada < desde.getTime() || criada > inicio.getTime()) continue;
       if (this.registro.jaProcessada(id)) continue;
       if (inicio.getTime() - criada < this.cfg.esperaMinutos * 60_000) {
         resumo.aguardando++;
@@ -254,7 +324,8 @@ export class Marcador {
   /**
    * Classifica as negociações dos funis permitidos criadas nos últimos `dias`,
    * sem gravar nada e sem mexer no registro das rodadas. É o teste com o
-   * histórico da Fase 3. Usa o mesmo cliente (e o mesmo limite de chamadas).
+   * histórico da Fase 3. Usa o mesmo cliente (e o mesmo limite de chamadas) e
+   * dá a vez às rodadas: enquanto uma rodada roda, o histórico espera.
    */
   async lerHistorico(dias: number): Promise<EstadoHistorico> {
     if (this.historico?.rodando) throw new Error('a leitura do histórico já está rodando');
@@ -281,15 +352,22 @@ export class Marcador {
       const desde = new Date(inicio.getTime() - dias * 24 * 3600_000);
       const lista = await this.api.listarNegociacoesCriadasEntre(desde, inicio, MAXIMO_PAGINAS_HISTORICO);
       const permitidos = new Set(this.cfg.funisPermitidos);
+      const vistas = new Set<string>();
       const alvo = lista
         .filter((d) => {
+          const id = idDe(d);
           const funil = this.funilDe(d);
-          return idDe(d) && funil && permitidos.has(funil) && Number.isFinite(Date.parse(d.created_at ?? ''));
+          const criada = Date.parse(d.created_at ?? '');
+          if (!id || vistas.has(id) || !funil || !permitidos.has(funil) || !Number.isFinite(criada)) return false;
+          if (criada < desde.getTime() || criada > inicio.getTime()) return false;
+          vistas.add(id);
+          return true;
         })
         .sort((a, b) => Date.parse(a.created_at as string) - Date.parse(b.created_at as string));
       estado.total = alvo.length;
 
       for (const d of alvo) {
+        while (this.emRodada) await dormir(1000);
         const funil = this.nomeDoFunil(this.funilDe(d));
         let tipo: TipoEntrada | null = null;
         let anteriores = 0;
@@ -368,7 +446,8 @@ export class Marcador {
     const ehFunilTestes = funilId === this.cfg.funilTestes;
     switch (this.cfg.modo) {
       case 'ativo':
-        return ehFunilTestes && !ehContatoDeTeste ? 'Funil de Testes com contato fora da lista de teste' : null;
+        if (ehFunilTestes) return ehContatoDeTeste ? null : 'Funil de Testes com contato fora da lista de teste';
+        return this.cfg.funisPermitidos.includes(funilId) ? null : 'funil fora da marcação';
       case 'teste':
         if (!ehFunilTestes) return 'modo teste: só grava no Funil de Testes';
         return ehContatoDeTeste ? null : 'modo teste: contato fora da lista de teste';
@@ -384,35 +463,27 @@ export class Marcador {
 
     // 1) Contatos da negociação nova: a lista já traz telefone e e-mail
     let contatos: ContatoCrm[] = d.contacts ?? [];
-    const temDados = (cs: ContatoCrm[]) =>
-      cs.some((c) => (c.phones ?? []).some((p) => p?.phone) || (c.emails ?? []).some((e) => e?.email));
-    if (!temDados(contatos)) contatos = await this.api.contatosDaNegociacao(id);
-
-    const todosEmails = unicos(
-      contatos.flatMap((c) => (c.emails ?? []).map((e) => (e?.email ? normalizarEmail(e.email) : null))),
-    );
-    const ehContatoDeTeste = todosEmails.some((e) => this.cfg.emailsTeste.includes(e));
-    const emails = todosEmails.filter(
+    let dados = dadosDosContatos(contatos);
+    if (!dados.telefones.length && !dados.emails.length) {
+      contatos = await this.api.contatosDaNegociacao(id);
+      dados = dadosDosContatos(contatos);
+    }
+    const ehContatoDeTeste = dados.emails.some((e) => this.cfg.emailsTeste.includes(e));
+    const emails = dados.emails.filter(
       (e) => this.cfg.emailsTeste.includes(e) || !this.cfg.dominiosInternos.some((dom) => e.endsWith(dom)),
     );
     // O CRM acha o número comparando só dígitos: DDD + número, sem o 55, acha
     // os gravados com ou sem 55, com + ou com máscara (teste de 16/10/2026)
-    const telefones = unicos(
-      contatos.flatMap((c) => (c.phones ?? []).map((p) => (p?.phone ? normalizarTelefone(p.phone) : null))),
-    )
-      .filter((t) => !this.cfg.telefonesInternos.includes(t))
-      .map((t) => t.slice(2));
+    const telefones = dados.telefones.filter((t) => !this.cfg.telefonesInternos.includes(t)).map((t) => t.slice(2));
 
-    const motivoSemGravar = forcarSimulacao
-      ? 'leitura do histórico'
-      : this.motivoParaNaoGravar(funilId, ehContatoDeTeste);
+    const motivoSemGravar = forcarSimulacao ? 'leitura do histórico' : this.motivoParaNaoGravar(funilId, ehContatoDeTeste);
 
     // 2) Outras negociações dos mesmos contatos
     const relacionadas = await this.buscarRelacionadas(id, d.created_at as string, telefones, emails, !motivoSemGravar);
 
-    // 3) Classificação
-    const permitidos = new Set(this.cfg.funisPermitidos);
-    if (ehFunilTestes) permitidos.add(this.cfg.funilTestes);
+    // 3) Classificação. Negociação do Funil de Testes só se compara com o
+    // Funil de Testes: assim um teste nunca vira tarefa de responsável real.
+    const permitidos = ehFunilTestes ? new Set([this.cfg.funilTestes]) : new Set(this.cfg.funisPermitidos);
     const c = classificar({ id, criadaEm: d.created_at as string }, relacionadas, permitidos);
 
     const base = {
@@ -424,38 +495,54 @@ export class Marcador {
       anteriores: c.anteriores.map((a) => a.id),
     };
     const semTarefa: Decisao['tarefa'] = c.tipo === 'Novo' ? 'não se aplica' : 'não criada';
+    const semGravar = (acao: Decisao['acao'], observacao: string): Decisao => ({
+      ...base,
+      acao,
+      campo: 'não gravado',
+      tarefa: semTarefa,
+      observacao,
+    });
 
-    if (motivoSemGravar) {
-      return { ...base, acao: 'simulou', campo: 'não gravado', tarefa: semTarefa, observacao: motivoSemGravar };
-    }
+    if (motivoSemGravar) return semGravar('simulou', motivoSemGravar);
 
-    // 4) Relê a negociação logo antes de gravar
+    // 4) Relê logo antes de gravar e confere tudo de novo
     const atual = await this.api.obterNegociacao(id);
-    if (estaFechada(atual)) {
-      return {
-        ...base,
-        acao: 'nada gravado',
-        campo: 'não gravado',
-        tarefa: semTarefa,
-        observacao: 'negociação ganha ou perdida antes da marcação',
-      };
+    const funilAtual = this.funilDe(atual);
+    if (funilAtual !== funilId) return semGravar('nada gravado', 'a negociação mudou de funil antes da gravação');
+    if (estaFechada(atual)) return semGravar('nada gravado', 'negociação ganha ou perdida antes da marcação');
+    const motivoAgora = this.motivoParaNaoGravar(funilAtual, ehContatoDeTeste);
+    if (motivoAgora) return semGravar('simulou', motivoAgora);
+    if (!Array.isArray(atual.deal_custom_fields)) {
+      throw new Error('o CRM devolveu a negociação sem os campos personalizados');
     }
 
     const observacoes: string[] = [];
 
     // 5) Campo "Tipo de entrada": preenchido por alguém, fica como está
     let campo: Decisao['campo'];
+    let depois: NegociacaoCrm = atual;
     const valorAtual = valorDoCampo(atual, this.cfg.campoTipoEntrada);
     if (valorAtual) {
       campo = 'já preenchido';
       if (valorAtual !== c.tipo) observacoes.push(`campo preenchido à mão com "${valorAtual}"; a API calculou "${c.tipo}"`);
     } else {
-      campo = await this.gravarCampo(id, atual, c.tipo, observacoes);
+      depois = await this.gravarCampo(id, atual, c.tipo, observacoes);
+      campo = 'gravado';
     }
 
     // 6) Tarefa para retorno e possível duplicado
     let tarefa: Decisao['tarefa'] = 'não se aplica';
-    if (c.tipo !== 'Novo') tarefa = await this.criarTarefa(id, atual, c, observacoes);
+    if (c.tipo !== 'Novo') {
+      if (this.disjuntor) {
+        tarefa = 'não criada';
+        observacoes.push('tarefa não criada: gravação suspensa');
+      } else if (estaFechada(depois)) {
+        tarefa = 'não criada';
+        observacoes.push('tarefa não criada: a negociação foi ganha ou perdida durante a marcação');
+      } else {
+        tarefa = await this.criarTarefa(id, depois, c, observacoes);
+      }
+    }
 
     return {
       ...base,
@@ -469,8 +556,9 @@ export class Marcador {
   /**
    * Negociações anteriores dos mesmos contatos. A busca de contatos já traz,
    * de cada cadastro, as negociações com situação (aberta, ganha, perdida);
-   * a data de criação sai do ID. Abre (GET) as abertas, para saber o funil, e,
-   * quando vai gravar, também as demais, para o texto da tarefa.
+   * a data de criação sai do ID. As abertas sempre entram (são elas que
+   * decidem o possível duplicado) e são abertas (GET) para saber o funil;
+   * quando vai gravar, as demais também, para o texto da tarefa.
    */
   private async buscarRelacionadas(
     idNova: string,
@@ -479,9 +567,14 @@ export class Marcador {
     emails: string[],
     detalharTodas: boolean,
   ): Promise<NegociacaoResumo[]> {
+    // Confere que o CRM devolveu só cadastros com o telefone ou o e-mail buscado
     const contatos: ContatoCrm[] = [];
-    for (const t of telefones) contatos.push(...(await this.api.buscarContatosPorTelefone(t)));
-    for (const e of emails) contatos.push(...(await this.api.buscarContatosPorEmail(e)));
+    for (const t of telefones) {
+      contatos.push(...(await this.api.buscarContatosPorTelefone(t)).filter((c) => contatoTemTelefone(c, t)));
+    }
+    for (const e of emails) {
+      contatos.push(...(await this.api.buscarContatosPorEmail(e)).filter((c) => contatoTemEmail(c, e)));
+    }
 
     const tNova = Date.parse(criadaEmNova);
     const leves = new Map<string, NegociacaoResumo>();
@@ -497,12 +590,16 @@ export class Marcador {
       }
     }
 
-    const ordenadas = [...leves.values()]
-      .sort((a, b) => (Date.parse(b.criadaEm ?? '') || 0) - (Date.parse(a.criadaEm ?? '') || 0))
-      .slice(0, MAXIMO_RELACIONADAS);
+    const porData = (a: NegociacaoResumo, b: NegociacaoResumo) =>
+      (Date.parse(b.criadaEm ?? '') || 0) - (Date.parse(a.criadaEm ?? '') || 0);
+    const todas = [...leves.values()].sort(porData);
+    const escolhidas = [
+      ...todas.filter((r) => r.aberta).slice(0, MAXIMO_ABERTAS),
+      ...todas.filter((r) => !r.aberta).slice(0, MAXIMO_FECHADAS),
+    ];
 
     const resultado: NegociacaoResumo[] = [];
-    for (const r of ordenadas) {
+    for (const r of escolhidas) {
       if (r.aberta || detalharTodas || !r.criadaEm) {
         resultado.push(this.resumoCompleto(await this.api.obterNegociacao(r.id), r));
       } else {
@@ -554,12 +651,19 @@ export class Marcador {
     };
   }
 
+  /**
+   * Grava o "Tipo de entrada" e devolve a negociação relida depois. Sempre
+   * confere depois de enviar, mesmo se o CRM respondeu com erro (ele pode ter
+   * gravado assim mesmo). Outros campos mudaram, ou não deu para conferir:
+   * dispara o disjuntor. Valor não gravado: lança erro, e a negociação é
+   * tentada de novo na próxima rodada (que relê tudo antes).
+   */
   private async gravarCampo(
     id: string,
     atual: NegociacaoCrm,
     tipo: TipoEntrada,
     observacoes: string[],
-  ): Promise<Decisao['campo']> {
+  ): Promise<NegociacaoCrm> {
     const outros = (atual.deal_custom_fields ?? []).filter((cf) => {
       const campoId = idDoCampo(cf);
       return campoId && campoId !== this.cfg.campoTipoEntrada;
@@ -569,43 +673,45 @@ export class Marcador {
       for (const cf of outros) campos.push({ custom_field_id: idDoCampo(cf) as string, value: cf.value ?? null });
     }
 
+    let erroAoGravar: unknown = null;
     try {
       await this.api.atualizarCamposPersonalizados(id, campos);
     } catch (err) {
-      observacoes.push(`campo não gravado: ${mensagem(err)}`);
-      return 'não gravado';
+      erroAoGravar = err;
     }
 
-    // A documentação não diz se o PUT troca a lista inteira de campos.
-    // Confere se algum outro campo mudou; se mudou, para de gravar.
+    let depois: NegociacaoCrm;
     try {
-      const depois = await this.api.obterNegociacao(id);
-      const alterados = camposAlterados(outros, depois.deal_custom_fields ?? []);
-      if (alterados.length) {
-        this.disjuntor = `outros campos mudaram ao gravar a negociação ${id}`;
-        this.log.erro(
-          `ALERTA: ${alterados.length} campo(s) mudaram ao gravar "Tipo de entrada" na negociação ${id}. ` +
-            'A marcação parou de gravar até a API reiniciar.',
-        );
-        observacoes.push(`ALERTA: ${alterados.length} outro(s) campo(s) mudaram; gravação suspensa`);
-      }
-      if (valorDoCampo(depois, this.cfg.campoTipoEntrada) !== tipo) {
-        observacoes.push('o CRM não mostrou o valor gravado');
-      }
+      depois = await this.api.obterNegociacao(id);
+      if (!Array.isArray(depois.deal_custom_fields)) throw new Error('resposta sem os campos personalizados');
     } catch (err) {
-      observacoes.push(`não deu para conferir os outros campos: ${mensagem(err)}`);
+      await this.dispararDisjuntor(`não deu para conferir os outros campos depois de gravar a negociação ${id}`);
+      throw new Error(`não deu para conferir os campos depois de gravar: ${mensagem(err)}`);
     }
-    return 'gravado';
+
+    const alterados = camposAlterados(outros, depois.deal_custom_fields);
+    if (alterados.length) {
+      await this.dispararDisjuntor(
+        `${alterados.length} outro(s) campo(s) mudaram ao gravar "Tipo de entrada" na negociação ${id}`,
+      );
+      observacoes.push(`ALERTA: ${alterados.length} outro(s) campo(s) mudaram; gravação suspensa`);
+    }
+
+    if (valorDoCampo(depois, this.cfg.campoTipoEntrada) !== tipo) {
+      throw erroAoGravar ?? new Error('o CRM não mostrou o valor gravado');
+    }
+    if (erroAoGravar) observacoes.push(`o CRM respondeu com erro, mas gravou (${mensagem(erroAoGravar)})`);
+    return depois;
   }
 
   private async criarTarefa(
     id: string,
-    atual: NegociacaoCrm,
+    negociacao: NegociacaoCrm,
     c: Classificacao,
     observacoes: string[],
   ): Promise<Decisao['tarefa']> {
     const assunto = c.tipo === 'Retorno' ? ASSUNTO_RETORNO : ASSUNTO_DUPLICADO;
-    const responsaveis = [idDe(atual.user ?? null)];
+    const responsaveis = [idDe(negociacao.user ?? null)];
     if (c.tipo === 'Possível duplicado') responsaveis.push(...c.abertasPermitidas.map((a) => a.responsavelId));
     const usuarios = unicos(responsaveis);
     if (!usuarios.length) {
@@ -613,10 +719,13 @@ export class Marcador {
       return 'não criada';
     }
 
-    const existentes = await this.api.tarefasDaNegociacao(id);
+    // Só conta tarefa que é mesmo desta negociação
+    const existentes = (await this.api.tarefasDaNegociacao(id)).filter(
+      (t) => (t.deal_id ?? idDe(t.deal ?? null)) === id,
+    );
     if (existentes.some((t) => (t.subject ?? '').trim() === assunto)) return 'já existia';
 
-    const campanha = atual.campaign?.name ?? null;
+    const campanha = negociacao.campaign?.name ?? null;
     const notas = c.tipo === 'Retorno' ? textoRetorno(c.anteriores, campanha) : textoDuplicado(c.abertasPermitidas, campanha);
     const prazo = prazoUtil(this.relogio(), 60);
     await this.api.criarTarefa({

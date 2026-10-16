@@ -2,12 +2,15 @@ import { paraFiltroCrm } from './tempo';
 
 /**
  * Cliente da API v1 do RD Station CRM usado pela marcação.
- * - O token vai só na URL da chamada; nunca entra em mensagem de erro ou log.
+ * - O token vai só na URL da chamada; mensagens de erro levam só método,
+ *   caminho e status HTTP (nem o token, nem o corpo da resposta).
  * - Intervalo mínimo entre chamadas (padrão 600 ms = até 100 por minuto; o
  *   limite do CRM é 120), compartilhado por tudo que usa o mesmo cliente.
- * - Erro 429: espera o Retry-After (ou 60 s) e tenta de novo, até 3 vezes.
- * - GET repete em falha de rede ou erro 5xx; PUT e POST não repetem nesses
- *   casos, porque o CRM pode ter recebido a primeira tentativa.
+ * - GET: em erro 429 espera o Retry-After (no máximo 2 min) e repete; em
+ *   falha de rede, erro 5xx ou resposta vazia, repete até 3 vezes.
+ * - PUT e POST nunca repetem: com erro, a negociação é tentada de novo na
+ *   próxima rodada, que relê tudo antes de gravar.
+ * - Resposta sem a lista esperada é tratada como erro, nunca como lista vazia.
  */
 
 export interface ContatoCrm {
@@ -64,6 +67,8 @@ export interface TarefaCrm {
   id?: string;
   _id?: string;
   subject?: string;
+  deal_id?: string;
+  deal?: { id?: string; _id?: string } | null;
 }
 
 export interface NovaTarefa {
@@ -128,6 +133,13 @@ export interface OpcoesCliente {
 }
 
 const MAXIMO_PAGINAS = 5;
+const MAXIMO_RETRY_AFTER_S = 120;
+
+function listaDe<T>(resposta: unknown, chave: string, caminho: string): T[] {
+  const valor = (resposta as Record<string, unknown> | null | undefined)?.[chave];
+  if (!Array.isArray(valor)) throw new ErroCrm(`GET ${caminho}: resposta sem "${chave}"`);
+  return valor as T[];
+}
 
 export class ClienteCrm implements ApiCrm {
   chamadas = 0;
@@ -142,13 +154,12 @@ export class ClienteCrm implements ApiCrm {
   async listarFunis(): Promise<FunilCrm[]> {
     const r = await this.chamar<unknown>('GET', '/deal_pipelines', { limit: '200' });
     if (Array.isArray(r)) return r as FunilCrm[];
-    const lista = (r as { deal_pipelines?: FunilCrm[] } | undefined)?.deal_pipelines;
-    return Array.isArray(lista) ? lista : [];
+    return listaDe<FunilCrm>(r, 'deal_pipelines', '/deal_pipelines');
   }
 
   async listarMotivosPerda(): Promise<{ id: string; nome: string }[]> {
-    const r = await this.chamar<{ deal_lost_reasons?: ReferenciaCrm[] }>('GET', '/deal_lost_reasons', { limit: '200' });
-    return (r?.deal_lost_reasons ?? [])
+    const r = await this.chamar<unknown>('GET', '/deal_lost_reasons', { limit: '200' });
+    return listaDe<ReferenciaCrm>(r, 'deal_lost_reasons', '/deal_lost_reasons')
       .map((m) => ({ id: String(m._id ?? m.id ?? ''), nome: String(m.name ?? '') }))
       .filter((m) => m.id);
   }
@@ -156,14 +167,14 @@ export class ClienteCrm implements ApiCrm {
   async listarNegociacoesCriadasEntre(inicio: Date, fim: Date, maximoPaginas = MAXIMO_PAGINAS): Promise<NegociacaoCrm[]> {
     const todas: NegociacaoCrm[] = [];
     for (let pagina = 1; pagina <= maximoPaginas; pagina++) {
-      const r = await this.chamar<{ deals?: NegociacaoCrm[]; has_more?: boolean }>('GET', '/deals', {
+      const r = await this.chamar<{ has_more?: boolean }>('GET', '/deals', {
         created_at_period: 'true',
         start_date: paraFiltroCrm(inicio),
         end_date: paraFiltroCrm(fim),
         limit: '200',
         page: String(pagina),
       });
-      const deals = Array.isArray(r?.deals) ? r.deals : [];
+      const deals = listaDe<NegociacaoCrm>(r, 'deals', '/deals');
       todas.push(...deals);
       if (!r?.has_more || deals.length === 0) break;
     }
@@ -171,29 +182,29 @@ export class ClienteCrm implements ApiCrm {
   }
 
   async obterNegociacao(id: string): Promise<NegociacaoCrm> {
-    const r = await this.chamar<NegociacaoCrm>('GET', `/deals/${encodeURIComponent(id)}`);
-    if (!r || typeof r !== 'object') throw new ErroCrm(`GET /deals/${id}: resposta vazia`);
+    const caminho = `/deals/${encodeURIComponent(id)}`;
+    const r = await this.chamar<NegociacaoCrm>('GET', caminho);
+    if (!r || typeof r !== 'object' || String(r.id ?? r._id ?? '') !== id) {
+      throw new ErroCrm(`GET ${caminho}: resposta não é esta negociação`);
+    }
     return r;
   }
 
   async contatosDaNegociacao(id: string): Promise<ContatoCrm[]> {
-    const r = await this.chamar<{ contacts?: ContatoCrm[] }>('GET', `/deals/${encodeURIComponent(id)}/contacts`, { limit: '50' });
-    return Array.isArray(r?.contacts) ? r.contacts : [];
+    const caminho = `/deals/${encodeURIComponent(id)}/contacts`;
+    return listaDe<ContatoCrm>(await this.chamar<unknown>('GET', caminho, { limit: '50' }), 'contacts', caminho);
   }
 
   async buscarContatosPorTelefone(telefone: string): Promise<ContatoCrm[]> {
-    const r = await this.chamar<{ contacts?: ContatoCrm[] }>('GET', '/contacts', { phone: telefone, limit: '200' });
-    return Array.isArray(r?.contacts) ? r.contacts : [];
+    return listaDe<ContatoCrm>(await this.chamar<unknown>('GET', '/contacts', { phone: telefone, limit: '200' }), 'contacts', '/contacts');
   }
 
   async buscarContatosPorEmail(email: string): Promise<ContatoCrm[]> {
-    const r = await this.chamar<{ contacts?: ContatoCrm[] }>('GET', '/contacts', { email, limit: '200' });
-    return Array.isArray(r?.contacts) ? r.contacts : [];
+    return listaDe<ContatoCrm>(await this.chamar<unknown>('GET', '/contacts', { email, limit: '200' }), 'contacts', '/contacts');
   }
 
   async tarefasDaNegociacao(id: string): Promise<TarefaCrm[]> {
-    const r = await this.chamar<{ tasks?: TarefaCrm[] }>('GET', '/tasks', { deal_id: id, limit: '200' });
-    return Array.isArray(r?.tasks) ? r.tasks : [];
+    return listaDe<TarefaCrm>(await this.chamar<unknown>('GET', '/tasks', { deal_id: id, limit: '200' }), 'tasks', '/tasks');
   }
 
   async atualizarCamposPersonalizados(id: string, campos: CampoParaGravar[]): Promise<void> {
@@ -223,19 +234,6 @@ export class ClienteCrm implements ApiCrm {
     return minhaVez;
   }
 
-  private resumirErro(texto: string): string {
-    if (!texto) return '';
-    let detalhe = texto;
-    try {
-      const corpo = JSON.parse(texto);
-      detalhe = typeof corpo?.error === 'string' ? corpo.error : JSON.stringify(corpo?.errors ?? corpo);
-    } catch {
-      // corpo não é JSON
-    }
-    detalhe = detalhe.split(this.token).join('***').replace(/\s+/g, ' ').slice(0, 150);
-    return detalhe ? ` (${detalhe})` : '';
-  }
-
   private async chamar<T>(
     metodo: 'GET' | 'PUT' | 'POST',
     caminho: string,
@@ -247,9 +245,16 @@ export class ClienteCrm implements ApiCrm {
     const buscador: Buscador = this.opcoes.buscador ?? (fetch as unknown as Buscador);
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (corpo !== undefined) headers['Content-Type'] = 'application/json';
+    const ehLeitura = metodo === 'GET';
 
     let falhas = 0;
     let pausas = 0;
+    const repetirLeitura = async (): Promise<boolean> => {
+      if (!ehLeitura || ++falhas >= 3) return false;
+      await this.dormir(2000 * falhas);
+      return true;
+    };
+
     for (;;) {
       await this.aguardarVez();
       this.chamadas++;
@@ -263,33 +268,37 @@ export class ClienteCrm implements ApiCrm {
           signal: AbortSignal.timeout(this.opcoes.timeoutMs ?? 15000),
         });
       } catch (err) {
-        if (metodo === 'GET' && ++falhas < 3) {
-          await this.dormir(2000 * falhas);
-          continue;
-        }
+        if (await repetirLeitura()) continue;
         const tipo = err instanceof Error ? err.name : 'erro';
         throw new ErroCrm(`${metodo} ${caminho}: sem resposta do CRM (${tipo})`);
       }
 
-      if (resp.status === 429 && pausas < 3) {
+      if (resp.status === 429 && ehLeitura && pausas < 3) {
         pausas++;
         const segundos = Number(resp.headers.get('retry-after'));
-        await this.dormir((Number.isFinite(segundos) && segundos > 0 ? segundos : 60) * 1000);
+        const espera = Number.isFinite(segundos) && segundos > 0 ? Math.min(segundos, MAXIMO_RETRY_AFTER_S) : 60;
+        await this.dormir(espera * 1000);
         continue;
       }
-      if (resp.status >= 500 && metodo === 'GET' && ++falhas < 3) {
-        await this.dormir(2000 * falhas);
-        continue;
-      }
+      if (resp.status >= 500 && (await repetirLeitura())) continue;
 
-      const texto = await resp.text().catch(() => '');
-      if (!resp.ok) {
-        throw new ErroCrm(`${metodo} ${caminho}: o CRM respondeu HTTP ${resp.status}${this.resumirErro(texto)}`, resp.status);
+      let texto: string;
+      try {
+        texto = await resp.text();
+      } catch {
+        if (await repetirLeitura()) continue;
+        throw new ErroCrm(`${metodo} ${caminho}: resposta do CRM incompleta`, resp.status);
       }
-      if (!texto.trim()) return undefined as T;
+      if (!resp.ok) throw new ErroCrm(`${metodo} ${caminho}: o CRM respondeu HTTP ${resp.status}`, resp.status);
+      if (!texto.trim()) {
+        if (!ehLeitura) return undefined as T;
+        if (await repetirLeitura()) continue;
+        throw new ErroCrm(`${metodo} ${caminho}: resposta vazia do CRM`, resp.status);
+      }
       try {
         return JSON.parse(texto) as T;
       } catch {
+        if (await repetirLeitura()) continue;
         throw new ErroCrm(`${metodo} ${caminho}: o CRM respondeu algo que não é JSON`, resp.status);
       }
     }
