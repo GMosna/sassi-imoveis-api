@@ -4,8 +4,9 @@ import { paraFiltroCrm } from './tempo';
  * Cliente da API v1 do RD Station CRM usado pela marcação.
  * - O token vai só na URL da chamada; mensagens de erro levam só método,
  *   caminho e status HTTP (nem o token, nem o corpo da resposta).
- * - Intervalo mínimo entre chamadas (padrão 600 ms = até 100 por minuto; o
- *   limite do CRM é 120), compartilhado por tudo que usa o mesmo cliente.
+ * - Intervalo mínimo entre chamadas (padrão 1,5 s = até 40 por minuto, um
+ *   terço do limite de 120 do CRM, que pode ser dividido com o Pluga e as
+ *   outras integrações), compartilhado por tudo que usa o mesmo cliente.
  * - GET: em erro 429 espera o Retry-After (no máximo 2 min) e repete; em
  *   falha de rede, erro 5xx ou resposta vazia, repete até 3 vezes.
  * - PUT e POST nunca repetem: com erro, a negociação é tentada de novo na
@@ -134,6 +135,8 @@ export interface OpcoesCliente {
 
 const MAXIMO_PAGINAS = 5;
 const MAXIMO_RETRY_AFTER_S = 120;
+/** Até 40 chamadas por minuto: sobra folga no limite de 120 para as outras integrações. */
+const INTERVALO_PADRAO_MS = 1500;
 
 function listaDe<T>(resposta: unknown, chave: string, caminho: string): T[] {
   const valor = (resposta as Record<string, unknown> | null | undefined)?.[chave];
@@ -224,7 +227,7 @@ export class ClienteCrm implements ApiCrm {
 
   /** Reserva a próxima vaga de chamada, respeitando o intervalo mínimo. */
   private aguardarVez(): Promise<void> {
-    const intervalo = this.opcoes.intervaloMs ?? 600;
+    const intervalo = this.opcoes.intervaloMs ?? INTERVALO_PADRAO_MS;
     const minhaVez = this.fila.then(async () => {
       const espera = this.proximaLiberada - Date.now();
       if (espera > 0) await this.dormir(espera);

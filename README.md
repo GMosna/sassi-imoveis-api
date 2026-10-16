@@ -131,6 +131,8 @@ variáveis estão em `.env.example`.
   registrada, sem repetir, e a tarefa é criada assim mesmo. Erro de rede,
   5xx, 429 ou resposta ilegível deixa a negociação para a próxima rodada.
 - Lead de teste (Funil de Testes) só é comparado com o Funil de Testes.
+- No máximo 40 chamadas por minuto ao CRM, uma de cada vez: o limite de 120
+  pode ser dividido com o Pluga e as outras integrações.
 - O token e os dados dos clientes não vão para o log.
 
 **Acompanhamento** (mesmo `API_TOKEN` das outras rotas):

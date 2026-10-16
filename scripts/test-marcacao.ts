@@ -1004,9 +1004,19 @@ async function testes() {
     const u = new URL(chamadas[0].url);
     igual('busca por telefone', [u.pathname, u.searchParams.get('phone'), u.searchParams.get('limit'), u.searchParams.get('token'), achados.length], ['/api/v1/contacts', '19991110002', '200', TOKEN, 1]);
 
+    {
+      // Sem intervalo informado (como no serviço): até 40 chamadas por minuto
+      const pausas: number[] = [];
+      const padrao = new ClienteCrm(TOKEN, { base: 'https://crm.teste/api/v1', buscador, dormir: async (ms) => { pausas.push(ms); } });
+      respostas.push({ status: 200, corpo: '{"tasks":[]}' }, { status: 200, corpo: '{"tasks":[]}' });
+      await padrao.tarefasDaNegociacao('d1');
+      await padrao.tarefasDaNegociacao('d1');
+      confere('intervalo padrão de 1,5 s entre chamadas', pausas.length === 1 && pausas[0] > 1400 && pausas[0] <= 1500, pausas);
+    }
+
     chamadas.length = 0;
     await cliente().atualizarCamposPersonalizados('d1', [{ custom_field_id: CAMPO, value: 'Retorno' }]);
-    igual('PUT só com o campo', [chamadas[0].init.method, JSON.parse(chamadas[0].init.body as string)], ['PUT', { deal: { deal_custom_fields: [{ custom_field_id: CAMPO, value: 'Retorno' }] } }]);
+    igual('PUT só com o campo',[chamadas[0].init.method, JSON.parse(chamadas[0].init.body as string)], ['PUT', { deal: { deal_custom_fields: [{ custom_field_id: CAMPO, value: 'Retorno' }] } }]);
 
     chamadas.length = 0;
     esperas.length = 0;
