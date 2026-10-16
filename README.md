@@ -88,3 +88,44 @@ Station Conversas, apontando para:
 GET https://<sua-url>/imoveis-disponiveis?bairro=&tipo=&dormitorios=&valor_max=
 Header: Authorization: Bearer <API_TOKEN>
 ```
+
+## Marcação de leads de retorno no RD CRM (`src/marcacao`)
+
+A cada `INTERVALO_MINUTOS` (padrão 5), a API lista as negociações criadas
+nas últimas 24 h nos funis Locação - Beta, Venda - Terceiros, Venda -
+Lançamentos e Pré Vendas SDR. Espera `ESPERA_TAREFA_MINUTOS` (padrão 10)
+para a roleta escolher o responsável. Depois procura outras negociações do
+mesmo contato, pelo telefone (DDD + número, sem 55) e pelo e-mail, e
+preenche o campo **Tipo de entrada**:
+
+- **Possível duplicado**: outra negociação anterior ainda aberta num desses
+  funis. Cria a tarefa "Possível duplicado: conferir antes de perder" para
+  os dois responsáveis.
+- **Retorno**: qualquer outra negociação anterior. Cria a tarefa "Lead de
+  retorno" com o histórico e a Campanha atual.
+- **Novo**: nenhuma negociação anterior. Só preenche o campo.
+
+Prazo das tarefas: 1 hora útil (segunda a sexta, 8h às 18h).
+
+**Modos** (`MARCACAO_MODO`): `desligado` (padrão, não faz nada),
+`simulacao` (só lê e registra o que faria), `teste` (só grava no Funil de
+Testes, em contatos de `EMAILS_TESTE`) e `ativo`. Qualquer variável inválida
+deixa o módulo desligado. As variáveis estão em `.env.example`.
+
+**Cuidados no código:** relê a negociação antes de gravar e não grava se
+ela já foi ganha ou perdida; não troca um "Tipo de entrada" preenchido à
+mão (só cria a tarefa e registra a diferença); confere se a tarefa já
+existe; depois de gravar, confere se os outros campos continuam iguais e,
+se algum mudou, para de gravar até a API reiniciar. O token e os dados dos
+clientes não vão para o log.
+
+**Acompanhamento** (mesmo `API_TOKEN` das outras rotas):
+
+- `GET /marcacao`: modo, última rodada e as últimas 50 decisões.
+- `POST /marcacao/historico?dias=30`: classifica, sem gravar nada, as
+  negociações dos últimos dias. É o teste com o histórico.
+- `GET /marcacao/historico`: andamento e resultado dessa leitura.
+
+**Para desligar:** `MARCACAO_MODO=desligado` no Railway (novo deploy). Para
+desfazer o código, basta voltar ao commit anterior: o resto da API não
+depende do módulo. Testes: `npx ts-node scripts/test-marcacao.ts`.
