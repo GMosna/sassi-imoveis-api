@@ -12,6 +12,7 @@ import {
   CampoParaGravar,
   ClienteCrm,
   ContatoCrm,
+  ErroCrm,
   FunilCrm,
   NegociacaoCrm,
   NovaTarefa,
@@ -186,16 +187,32 @@ class CrmFalso implements ApiCrm {
   fecharAoReler = new Set<string>();
   /** Negociação que aparece em outro funil quando é relida. */
   moverAoReler = new Map<string, string>();
-  /** PUT que dá erro: antes de gravar ou depois de gravar (como um timeout). */
-  falharPut: 'antes' | 'depois' | null = null;
+  /**
+   * PUT com problema: 'antes' = falha de rede sem gravar; 'depois' = grava e
+   * falha (como um timeout); 'rejeita' = HTTP 422 sem gravar; 'ignora' =
+   * responde OK sem guardar o valor; 'ilegivel' = grava e responde HTTP 200
+   * com uma resposta que não dá para ler.
+   */
+  falharPut: 'antes' | 'depois' | 'rejeita' | 'ignora' | 'ilegivel' | null = null;
   /** Depois de um PUT nesta negociação, a releitura falha. */
   falharObterDepoisDoPut = new Set<string>();
-  /** Simula um CRM que ignora os filtros. */
+  /** POST da tarefa cria e depois falha, uma vez, para estas negociações. */
+  falharTarefaDepoisPara = new Set<string>();
+  /** Simula um CRM que ignora os filtros ou não informa a negociação da tarefa. */
   listaIgnoraData = false;
   duplicarLista = false;
   buscaIgnoraFiltro = false;
   tarefasIgnoraFiltro = false;
-  private gravadas = new Set<string>();
+  tarefasSemNegociacao = false;
+  private tentadas = new Set<string>();
+
+  /** A negociação passa para outro funil de vez (lista e releitura). */
+  moverDeVez(id: string, funil: string) {
+    const d = this.negociacoes.get(id) as NegociacaoCrm;
+    d.deal_pipeline = { id: funil, name: NOME_FUNIL[funil] };
+    d.deal_stage = { id: ETAPA[funil], name: 'Atendimento' };
+    this.moverAoReler.delete(id);
+  }
 
   novaNegociacao(funil: string, quando: Date, extra: Partial<NegociacaoCrm> = {}): string {
     const id = oid(quando);
@@ -263,7 +280,7 @@ class CrmFalso implements ApiCrm {
     this.chamadas++;
     this.obterChamados.push(id);
     if (this.falharObter.has(id)) throw new Error('falha simulada do CRM');
-    if (this.gravadas.has(id) && this.falharObterDepoisDoPut.has(id)) throw new Error('falha simulada depois do PUT');
+    if (this.tentadas.has(id) && this.falharObterDepoisDoPut.has(id)) throw new Error('falha simulada depois do PUT');
     const d = this.negociacoes.get(id);
     if (!d) throw new Error('negociação inexistente');
     const c = copia(d);
@@ -301,13 +318,15 @@ class CrmFalso implements ApiCrm {
     this.chamadas++;
     return this.tarefas
       .filter((t) => this.tarefasIgnoraFiltro || t.deal_id === id)
-      .map((t) => ({ subject: t.subject, deal_id: t.deal_id }));
+      .map((t) => (this.tarefasSemNegociacao ? { subject: t.subject } : { subject: t.subject, deal_id: t.deal_id }));
   }
   async atualizarCamposPersonalizados(id: string, campos: CampoParaGravar[]): Promise<void> {
     this.chamadas++;
     this.puts.push({ id, campos: copia(campos) });
+    this.tentadas.add(id);
     if (this.falharPut === 'antes') throw new Error('falha simulada no PUT');
-    this.gravadas.add(id);
+    if (this.falharPut === 'rejeita') throw new ErroCrm(`PUT /deals/${id}: o CRM respondeu HTTP 422`, 422);
+    if (this.falharPut === 'ignora') return;
     const d = this.negociacoes.get(id) as NegociacaoCrm;
     if (this.modoPut === 'substitui') {
       d.deal_custom_fields = campos.map((c) => ({ custom_field_id: c.custom_field_id, value: c.value }));
@@ -321,10 +340,12 @@ class CrmFalso implements ApiCrm {
       d.deal_custom_fields = lista;
     }
     if (this.falharPut === 'depois') throw new Error('falha simulada depois de gravar (timeout)');
+    if (this.falharPut === 'ilegivel') throw new ErroCrm(`PUT /deals/${id}: resposta do CRM incompleta`, 200);
   }
   async criarTarefa(tarefa: NovaTarefa): Promise<void> {
     this.chamadas++;
     this.tarefas.push(copia(tarefa));
+    if (this.falharTarefaDepoisPara.delete(tarefa.deal_id)) throw new Error('falha simulada depois de criar a tarefa');
   }
 }
 
@@ -534,13 +555,15 @@ async function testes() {
     const registro = await novoRegistro();
     logs.length = 0;
     const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
-    await m.rodada();
+    const r = await m.rodada();
     igual('só a primeira gravação acontece', crm.puts.length, 1);
     confere('disjuntor ligado', Boolean(m.disjuntor), m.disjuntor);
     confere('log de alerta', logs.some((l) => l.startsWith('erro: ALERTA')), logs);
-    const suspensas = registro.ultimas(200).filter((d) => (d.observacao ?? '').startsWith('gravação suspensa'));
-    igual('as demais ficam só em simulação', suspensas.length, 9);
+    igual('nenhuma negociação dada como processada', [registro.ultimas(200).length, registro.jaProcessada(ids.N11)], [0, false]);
+    igual('as demais esperam a liberação', [r.suspensa, r.aguardando, r.erros], [true, 10, 1]);
     igual('nenhuma tarefa nova depois do alerta', crm.tarefas.filter((t) => t.deal_id !== ids.N11).length, 0);
+    const r2 = await m.rodada();
+    igual('rodada seguinte não faz nada', [r2.suspensa, r2.processadas, r2.chamadas], [true, 0, 0]);
   }
 
   // -------------------------------------------------------------------------
@@ -583,9 +606,27 @@ async function testes() {
     const registro = await novoRegistro();
     const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
     await m.rodada();
-    const d = registro.ultimas(200).find((x) => x.negociacao === ids.N2);
-    igual('N2 não é gravada', [crm.puts.some((p) => p.id === ids.N2), d?.acao, d?.observacao], [false, 'nada gravado', 'a negociação mudou de funil antes da gravação']);
+    igual('N2 não é gravada nem dada como processada', [crm.puts.some((p) => p.id === ids.N2), registro.jaProcessada(ids.N2)], [false, false]);
     igual('N2 sem tarefa', crm.tarefas.filter((t) => t.deal_id === ids.N2).length, 0);
+    // Foi para Captação de vez: a lista mostra o funil novo e ela sai da marcação
+    crm.moverDeVez(ids.N2, CL);
+    await m.rodada();
+    igual('em Captação ela nunca é gravada', [crm.puts.some((p) => p.id === ids.N2), registro.jaProcessada(ids.N2)], [false, false]);
+  }
+
+  console.log('\n--- revisão: mudou entre dois funis da marcação: grava no funil novo ---');
+  {
+    const { crm, ids } = montarCenario();
+    crm.moverAoReler.set(ids.N2, VT);
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    await m.rodada();
+    igual('rodada 1: N2 fica para depois', [crm.puts.some((p) => p.id === ids.N2), registro.jaProcessada(ids.N2)], [false, false]);
+    crm.moverDeVez(ids.N2, VT);
+    await m.rodada();
+    const d = registro.ultimas(200).find((x) => x.negociacao === ids.N2);
+    igual('rodada 2: Retorno gravado em Venda - Terceiros', [d?.tipo, d?.acao, d?.funil], ['Retorno', 'gravou', 'Venda - Terceiros']);
+    igual('com a tarefa', crm.tarefas.filter((t) => t.deal_id === ids.N2).length, 1);
   }
 
   console.log('\n--- revisão: PUT dá erro mas grava (como um timeout) ---');
@@ -633,8 +674,8 @@ async function testes() {
     const registro = await novoRegistro();
     const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
     await m.rodada();
-    igual('disjuntor ligado e N11 fica para a próxima rodada', [Boolean(m.disjuntor), registro.jaProcessada(ids.N11), crm.puts.length], [true, false, 1]);
-    igual('as outras só simulam', registro.ultimas(200).filter((d) => (d.observacao ?? '').startsWith('gravação suspensa')).length, 9);
+    igual('disjuntor ligado e N11 fica para depois', [Boolean(m.disjuntor), registro.jaProcessada(ids.N11), crm.puts.length], [true, false, 1]);
+    igual('nenhuma outra dada como processada', registro.ultimas(200).length, 0);
 
     const arquivo = (registro as unknown as { arquivo: string }).arquivo;
     const depoisDeReiniciar = new Registro(arquivo);
@@ -647,6 +688,129 @@ async function testes() {
     const liberado = new Registro(arquivo);
     await liberado.carregar();
     igual('liberação guardada em disco', liberado.disjuntor, null);
+
+    // Depois de liberar, todas as negociações da janela são vistas, inclusive a N11
+    crm.falharObterDepoisDoPut.clear();
+    const r3 = await m2.rodada();
+    igual('depois de liberar processa todas', r3.processadas, 10);
+    const n11 = depoisDeReiniciar.ultimas(200).find((d) => d.negociacao === ids.N11);
+    igual('N11 com o valor que já tinha gravado', [n11?.campo, n11?.tarefa], ['já preenchido', 'já existia']);
+    igual('N2 ganha campo e tarefa', [crm.puts.some((p) => p.id === ids.N2), crm.tarefas.filter((t) => t.deal_id === ids.N2).length], [true, 1]);
+    igual('N11 não recebe um segundo PUT', crm.puts.filter((p) => p.id === ids.N11).length, 1);
+  }
+
+  console.log('\n--- segunda revisão: recusa definitiva (HTTP 422) não repete e cria a tarefa ---');
+  {
+    const { crm, ids } = montarCenario();
+    crm.falharPut = 'rejeita';
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    const r1 = await m.rodada();
+    const d = registro.ultimas(200).find((x) => x.negociacao === ids.N2);
+    igual('todas processadas, sem disjuntor', [r1.processadas, r1.erros, m.disjuntor], [10, 0, null]);
+    confere('N2: campo não gravado, com o motivo', d?.campo === 'não gravado' && (d?.observacao ?? '').includes('HTTP 422'), d);
+    igual('tarefas criadas assim mesmo', ['N2', 'N3', 'N7', 'P8', 'N10'].map((n) => crm.tarefas.filter((t) => t.deal_id === ids[n]).length), [1, 1, 1, 1, 1]);
+    await m.rodada();
+    igual('não repete o PUT', crm.puts.length, 8);
+  }
+
+  console.log('\n--- segunda revisão: CRM aceita e não guarda o valor: não repete e cria a tarefa ---');
+  {
+    const { crm, ids } = montarCenario();
+    crm.falharPut = 'ignora';
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    await m.rodada();
+    await m.rodada();
+    const d = registro.ultimas(200).find((x) => x.negociacao === ids.N2);
+    igual('N2', [d?.campo, d?.tarefa, d?.observacao], ['não gravado', 'criada', 'o CRM aceitou, mas não mostrou o valor gravado']);
+    igual('um PUT por negociação', crm.puts.length, 8);
+  }
+
+  console.log('\n--- segunda revisão: recusa definitiva e releitura falha: sem disjuntor ---');
+  {
+    const { crm, ids } = montarCenario();
+    crm.falharPut = 'rejeita';
+    crm.falharObterDepoisDoPut.add(ids.N11);
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    const r = await m.rodada();
+    igual('disjuntor desligado, N11 fica para depois, as outras seguem', [m.disjuntor, registro.jaProcessada(ids.N11), r.processadas], [null, false, 9]);
+  }
+
+  console.log('\n--- segunda revisão: tarefa sem a negociação informada e POST que cria e falha ---');
+  {
+    const { crm, ids } = montarCenario();
+    crm.tarefasSemNegociacao = true;
+    crm.falharTarefaDepoisPara.add(ids.N2);
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    const r1 = await m.rodada();
+    igual('rodada 1: N2 fica para depois', [r1.erros, registro.jaProcessada(ids.N2)], [1, false]);
+    await m.rodada();
+    const d = registro.ultimas(200).find((x) => x.negociacao === ids.N2);
+    igual('rodada 2: reconhece a tarefa já criada', [d?.campo, d?.tarefa], ['já preenchido', 'já existia']);
+    igual('N2 com uma tarefa só', crm.tarefas.filter((t) => t.deal_id === ids.N2).length, 1);
+  }
+
+  console.log('\n--- terceira revisão: PUT grava, apaga outros campos, resposta ilegível e releitura falha: disjuntor ---');
+  {
+    const { crm, ids } = montarCenario();
+    crm.modoPut = 'substitui';
+    crm.falharPut = 'ilegivel';
+    crm.falharObterDepoisDoPut.add(ids.N11); // N11 é a primeira da rodada
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    await m.rodada();
+    igual(
+      'disjuntor ligado, N11 fica para depois, uma gravação só',
+      [Boolean(m.disjuntor), registro.jaProcessada(ids.N11), crm.puts.length],
+      [true, false, 1],
+    );
+  }
+
+  console.log('\n--- terceira revisão: resposta ilegível, mas gravou: confere e segue ---');
+  {
+    const { crm, ids } = montarCenario();
+    crm.falharPut = 'ilegivel';
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    const r = await m.rodada();
+    const d = registro.ultimas(200).find((x) => x.negociacao === ids.N2);
+    igual('todas processadas, sem disjuntor', [r.processadas, r.erros, m.disjuntor], [10, 0, null]);
+    igual(
+      'N2 gravada, com a observação',
+      [d?.campo, (d?.observacao ?? '').includes('o CRM respondeu com erro, mas gravou')],
+      ['gravado', true],
+    );
+  }
+
+  console.log('\n--- terceira revisão: o disjuntor não conta como tentativa ---');
+  {
+    const { crm, ids } = montarCenario();
+    crm.falharObter.add(ids.N11);
+    const registro = await novoRegistro();
+    const m = new Marcador(config({ MARCACAO_MODO: 'ativo' }), crm, registro, log, () => AGORA);
+    await m.rodada();
+    await m.rodada();
+    igual('N11 falhou duas vezes e continua pendente', registro.jaProcessada(ids.N11), false);
+    crm.falharObter.delete(ids.N11);
+    crm.modoPut = 'substitui';
+    await m.rodada();
+    igual(
+      'na terceira, o disjuntor liga e N11 não é dada como desistida',
+      [Boolean(m.disjuntor), registro.jaProcessada(ids.N11), registro.ultimas(200).some((x) => x.negociacao === ids.N11)],
+      [true, false, false],
+    );
+    crm.modoPut = 'mescla';
+    await m.religar();
+    await m.rodada();
+    const n11 = registro.ultimas(200).find((x) => x.negociacao === ids.N11);
+    igual(
+      'depois de liberar, N11 é processada sem novo PUT',
+      [n11?.campo, n11?.tarefa, crm.puts.filter((p) => p.id === ids.N11).length],
+      ['já preenchido', 'já existia', 1],
+    );
   }
 
   console.log('\n--- revisão: o CRM ignora o filtro de data ---');
@@ -726,18 +890,50 @@ async function testes() {
     igual('negociação real intocada', crm.puts.some((p) => p.id === real), false);
   }
 
-  console.log('\n--- revisão: telefone gigante não trava a API ---');
+  console.log('\n--- revisão: telefone gigante não trava a API e telefone com texto é lido ---');
   {
     const crm = new CrmFalso();
-    const id = crm.novaNegociacao(LB, minAtras(30));
-    crm.novoContato([id], ' '.repeat(5000) + '19991117777');
+    const comEspacos = crm.novaNegociacao(LB, minAtras(30));
+    crm.novoContato([comEspacos], ' '.repeat(5000) + '19991117777');
+    const semEspacos = crm.novaNegociacao(LB, minAtras(31));
+    crm.novoContato([semEspacos], '1-'.repeat(3000));
+    const comRecado = crm.novaNegociacao(LB, minAtras(32));
+    crm.novoContato([comRecado], '(19) 99111-5555 / (19) 3404-0000 recado Maria');
+    const anterior = crm.novaNegociacao(LB, diasAtras(30));
+    crm.fechar(anterior, false, diasAtras(25));
+    crm.novoContato([anterior], 'cel (19) 99111-5555 ou fixo (19) 3404-0000, falar com a Maria depois das 18h');
     const registro = await novoRegistro();
     const m = new Marcador(config({ MARCACAO_MODO: 'simulacao' }), crm, registro, log, () => AGORA);
     const inicio = Date.now();
     await m.rodada();
     const ms = Date.now() - inicio;
     confere(`rodada rápida (${ms} ms)`, ms < 500, ms);
-    igual('telefone ignorado, sem busca', crm.buscasTelefone, []);
+    igual('busca os telefones de verdade', [...crm.buscasTelefone].sort(), ['19991115555', '19991117777']);
+    igual('telefone com recado acha a anterior', tiposPorId(registro, { comRecado }), { comRecado: 'Retorno/simulou' });
+  }
+
+  console.log('\n--- segunda revisão: registro em disco ---');
+  {
+    const pasta = await fs.mkdtemp(path.join(os.tmpdir(), 'marcacao-registro-'));
+    const arquivo = path.join(pasta, 'registro.json');
+    const r = new Registro(arquivo);
+    r.marcarProcessada('d1', AGORA);
+    await Promise.all([r.salvar(), r.salvar(), r.salvar(), r.salvar(), r.salvar()]);
+    const lido = JSON.parse(await fs.readFile(arquivo, 'utf-8'));
+    igual('5 gravações seguidas deixam o arquivo inteiro', lido.processadas.length, 1);
+
+    const semArquivo = new Registro(path.join(pasta, 'nao-existe.json'));
+    await semArquivo.carregar();
+    igual('sem arquivo: começa vazio e gravando', semArquivo.disjuntor, null);
+
+    await fs.writeFile(arquivo, '{"processadas": [', 'utf-8');
+    const avisos: string[] = [];
+    const corrompido = new Registro(arquivo, (m) => avisos.push(m));
+    await corrompido.carregar();
+    confere('arquivo ilegível: gravação suspensa', (corrompido.disjuntor?.motivo ?? '').includes('ilegível'), corrompido.disjuntor);
+    const copia = await fs.readFile(`${arquivo}.ilegivel`, 'utf-8').catch(() => null);
+    igual('cópia do arquivo ilegível guardada', copia, '{"processadas": [');
+    igual('aviso no log', avisos.length, 1);
   }
 
   // -------------------------------------------------------------------------

@@ -6,6 +6,7 @@ import {
   CampoParaGravar,
   CampoPersonalizadoCrm,
   ContatoCrm,
+  ErroCrm,
   NegociacaoCrm,
   NegociacaoDoContato,
 } from './crm.client';
@@ -27,7 +28,9 @@ import { ASSUNTO_DUPLICADO, ASSUNTO_RETORNO, textoDuplicado, textoRetorno } from
  * - campo já preenchido por alguém: não troca o valor (só cria a tarefa);
  * - depois de qualquer gravação, relê e confere se os outros campos continuam
  *   iguais; se algum mudou, ou se não der para conferir, para de gravar
- *   (disjuntor guardado em disco, liberado só por POST /marcacao/religar);
+ *   (disjuntor guardado em disco, liberado só por POST /marcacao/religar).
+ *   Enquanto está parada, nenhuma negociação é processada: todas esperam a
+ *   liberação e são vistas depois (dentro da janela de 24 h);
  * - antes de criar a tarefa, confere se ela já existe;
  * - negociação do Funil de Testes só é comparada com o Funil de Testes, para
  *   um teste nunca gerar tarefa para responsável de negociação real.
@@ -74,6 +77,8 @@ export interface ResumoRodada {
   chamadas: number;
   /** Erro que interrompeu a rodada inteira (ex.: CRM fora do ar). */
   erro: string | null;
+  /** Rodada não processou nada porque a gravação está suspensa. */
+  suspensa: boolean;
 }
 
 const JANELA_HORAS = 24;
@@ -84,8 +89,11 @@ const RECARREGAR_LISTAS_MS = 6 * 3600_000;
 const MAXIMO_TENTATIVAS = 3;
 const GUARDAR_PROCESSADAS_DIAS = 3;
 const MAXIMO_PAGINAS_HISTORICO = 25;
-/** Textos maiores não são telefone nem e-mail de verdade; a extração do telefone fica lenta com textos longos. */
-const MAXIMO_TELEFONE = 40;
+/**
+ * A extração do telefone fica lenta com textos muito longos: o campo é lido
+ * com espaços juntados e até 100 caracteres. E-mail com mais de 254 não existe.
+ */
+const MAXIMO_TELEFONE = 100;
 const MAXIMO_EMAIL = 254;
 
 export const idDe = (x: { id?: string; _id?: string } | null | undefined): string | null =>
@@ -134,13 +142,14 @@ export function camposAlterados(antes: CampoPersonalizadoCrm[], depois: CampoPer
   return alterados;
 }
 
-/** Telefones (55DDNUMERO) e e-mails (minúsculos) dos contatos, ignorando textos absurdos. */
+/** Telefones (55DDNUMERO) e e-mails (minúsculos) dos contatos. */
 function dadosDosContatos(contatos: ContatoCrm[]): { telefones: string[]; emails: string[] } {
   const telefones = unicos(
     contatos.flatMap((c) =>
       (c.phones ?? []).map((p) => {
         const t = p?.phone;
-        return typeof t === 'string' && t.length <= MAXIMO_TELEFONE ? normalizarTelefone(t) : null;
+        if (typeof t !== 'string') return null;
+        return normalizarTelefone(t.replace(/\s+/g, ' ').trim().slice(0, MAXIMO_TELEFONE));
       }),
     ),
   );
@@ -157,11 +166,19 @@ function dadosDosContatos(contatos: ContatoCrm[]): { telefones: string[]; emails
 
 function contatoTemTelefone(c: ContatoCrm, digitosBuscados: string): boolean {
   return (c.phones ?? []).some(
-    (p) =>
-      typeof p?.phone === 'string' &&
-      p.phone.length <= MAXIMO_TELEFONE &&
-      p.phone.replace(/\D/g, '').includes(digitosBuscados),
+    (p) => typeof p?.phone === 'string' && p.phone.replace(/\D/g, '').includes(digitosBuscados),
   );
+}
+
+/**
+ * Erro de gravação com desfecho incerto: o CRM pode ter gravado (rede, tempo
+ * esgotado, erro 5xx, resposta de sucesso que não deu para ler). Só uma recusa
+ * 4xx garante que nada foi gravado.
+ */
+function podeTerGravado(erro: unknown): boolean {
+  if (!erro) return true;
+  if (!(erro instanceof ErroCrm) || erro.status === undefined) return true;
+  return erro.status < 400 || erro.status >= 500;
 }
 
 function contatoTemEmail(c: ContatoCrm, email: string): boolean {
@@ -226,6 +243,7 @@ export class Marcador {
       erros: 0,
       chamadas: 0,
       erro: null,
+      suspensa: false,
     };
     this.ultimaRodada = resumo;
     this.emRodada = true;
@@ -249,7 +267,17 @@ export class Marcador {
     return resumo;
   }
 
+  /** Gravação suspensa num modo que grava: nada é processado até a liberação. */
+  private gravacaoSuspensa(): boolean {
+    return Boolean(this.disjuntor) && this.cfg.modo !== 'simulacao';
+  }
+
   private async executarRodada(inicio: Date, resumo: ResumoRodada): Promise<void> {
+    if (this.gravacaoSuspensa()) {
+      resumo.suspensa = true;
+      this.log.aviso(`marcação parada: ${this.disjuntor}. Depois de conferir o CRM, libere em POST /marcacao/religar.`);
+      return;
+    }
     await this.carregarListas(inicio);
 
     const desde = new Date(inicio.getTime() - JANELA_HORAS * 3600_000);
@@ -281,6 +309,12 @@ export class Marcador {
     if (prontas.length > MAXIMO_POR_RODADA) resumo.aguardando += prontas.length - MAXIMO_POR_RODADA;
 
     for (const d of prontas.slice(0, MAXIMO_POR_RODADA)) {
+      // Gravação suspensa no meio da rodada: as demais esperam a liberação
+      if (this.gravacaoSuspensa()) {
+        resumo.aguardando++;
+        resumo.suspensa = true;
+        continue;
+      }
       const id = idDe(d) as string;
       try {
         const decisao = await this.processar(d);
@@ -295,6 +329,12 @@ export class Marcador {
         if (decisao.tarefa === 'criada') resumo.tarefas++;
       } catch (err) {
         resumo.erros++;
+        // A gravação foi suspensa durante esta negociação: não conta como
+        // tentativa, ela volta inteira depois da liberação.
+        if (this.gravacaoSuspensa()) {
+          this.log.aviso(`negociação ${id}: ${mensagem(err)} (volta depois da liberação)`);
+          continue;
+        }
         const tentativas = (this.falhas.get(id) ?? 0) + 1;
         this.falhas.set(id, tentativas);
         this.log.aviso(`negociação ${id}: ${mensagem(err)} (tentativa ${tentativas} de ${MAXIMO_TENTATIVAS})`);
@@ -440,9 +480,8 @@ export class Marcador {
     return funilId ? (this.funis.get(funilId) ?? funilId) : 'funil desconhecido';
   }
 
-  /** Por que esta negociação não pode receber gravação agora (null = pode). */
+  /** Por que esta negociação não pode receber gravação (null = pode). A suspensão é tratada à parte. */
   private motivoParaNaoGravar(funilId: string, ehContatoDeTeste: boolean): string | null {
-    if (this.disjuntor) return `gravação suspensa: ${this.disjuntor}`;
     const ehFunilTestes = funilId === this.cfg.funilTestes;
     switch (this.cfg.modo) {
       case 'ativo':
@@ -460,6 +499,8 @@ export class Marcador {
     const id = idDe(d) as string;
     const funilId = this.funilDe(d) as string;
     const ehFunilTestes = funilId === this.cfg.funilTestes;
+    // Suspensa: a negociação não é marcada como processada e volta depois da liberação
+    if (!forcarSimulacao && this.gravacaoSuspensa()) throw new Error(`gravação suspensa: ${this.disjuntor}`);
 
     // 1) Contatos da negociação nova: a lista já traz telefone e e-mail
     let contatos: ContatoCrm[] = d.contacts ?? [];
@@ -505,11 +546,13 @@ export class Marcador {
 
     if (motivoSemGravar) return semGravar('simulou', motivoSemGravar);
 
-    // 4) Relê logo antes de gravar e confere tudo de novo
+    // 4) Relê logo antes de gravar e confere tudo de novo. Mudou de funil:
+    // não grava agora; a próxima rodada vê a negociação no funil novo.
     const atual = await this.api.obterNegociacao(id);
     const funilAtual = this.funilDe(atual);
-    if (funilAtual !== funilId) return semGravar('nada gravado', 'a negociação mudou de funil antes da gravação');
+    if (funilAtual !== funilId) throw new Error('a negociação mudou de funil antes da gravação; volta na próxima rodada');
     if (estaFechada(atual)) return semGravar('nada gravado', 'negociação ganha ou perdida antes da marcação');
+    if (this.gravacaoSuspensa()) throw new Error(`gravação suspensa: ${this.disjuntor}`);
     const motivoAgora = this.motivoParaNaoGravar(funilAtual, ehContatoDeTeste);
     if (motivoAgora) return semGravar('simulou', motivoAgora);
     if (!Array.isArray(atual.deal_custom_fields)) {
@@ -526,16 +569,16 @@ export class Marcador {
       campo = 'já preenchido';
       if (valorAtual !== c.tipo) observacoes.push(`campo preenchido à mão com "${valorAtual}"; a API calculou "${c.tipo}"`);
     } else {
-      depois = await this.gravarCampo(id, atual, c.tipo, observacoes);
-      campo = 'gravado';
+      const gravacao = await this.gravarCampo(id, atual, c.tipo, observacoes);
+      campo = gravacao.campo;
+      depois = gravacao.depois;
     }
 
     // 6) Tarefa para retorno e possível duplicado
     let tarefa: Decisao['tarefa'] = 'não se aplica';
     if (c.tipo !== 'Novo') {
-      if (this.disjuntor) {
-        tarefa = 'não criada';
-        observacoes.push('tarefa não criada: gravação suspensa');
+      if (this.gravacaoSuspensa()) {
+        throw new Error(`gravação suspensa: ${this.disjuntor}`);
       } else if (estaFechada(depois)) {
         tarefa = 'não criada';
         observacoes.push('tarefa não criada: a negociação foi ganha ou perdida durante a marcação');
@@ -652,18 +695,23 @@ export class Marcador {
   }
 
   /**
-   * Grava o "Tipo de entrada" e devolve a negociação relida depois. Sempre
-   * confere depois de enviar, mesmo se o CRM respondeu com erro (ele pode ter
-   * gravado assim mesmo). Outros campos mudaram, ou não deu para conferir:
-   * dispara o disjuntor. Valor não gravado: lança erro, e a negociação é
-   * tentada de novo na próxima rodada (que relê tudo antes).
+   * Grava o "Tipo de entrada" e devolve a negociação relida depois.
+   * - Sempre relê e confere depois de enviar, mesmo se o CRM respondeu com
+   *   erro: com rede, tempo esgotado, erro 5xx ou resposta ilegível, ele pode
+   *   ter gravado.
+   * - Outros campos mudaram: dispara o disjuntor e lança erro, para a
+   *   negociação voltar depois da liberação (sem tarefa até lá).
+   * - Não deu para reler depois de um envio que pode ter gravado: disjuntor.
+   * - Valor não gravado: erro temporário (rede, 5xx, 429) volta na próxima
+   *   rodada; recusa definitiva (outro 4xx) ou CRM que aceitou e não guardou
+   *   ficam registrados, sem repetir, e a tarefa é criada assim mesmo.
    */
   private async gravarCampo(
     id: string,
     atual: NegociacaoCrm,
     tipo: TipoEntrada,
     observacoes: string[],
-  ): Promise<NegociacaoCrm> {
+  ): Promise<{ campo: Decisao['campo']; depois: NegociacaoCrm }> {
     const outros = (atual.deal_custom_fields ?? []).filter((cf) => {
       const campoId = idDoCampo(cf);
       return campoId && campoId !== this.cfg.campoTipoEntrada;
@@ -680,12 +728,16 @@ export class Marcador {
       erroAoGravar = err;
     }
 
+    const incerto = podeTerGravado(erroAoGravar);
+
     let depois: NegociacaoCrm;
     try {
       depois = await this.api.obterNegociacao(id);
       if (!Array.isArray(depois.deal_custom_fields)) throw new Error('resposta sem os campos personalizados');
     } catch (err) {
-      await this.dispararDisjuntor(`não deu para conferir os outros campos depois de gravar a negociação ${id}`);
+      if (incerto) {
+        await this.dispararDisjuntor(`não deu para conferir os outros campos depois de gravar a negociação ${id}`);
+      }
       throw new Error(`não deu para conferir os campos depois de gravar: ${mensagem(err)}`);
     }
 
@@ -694,14 +746,23 @@ export class Marcador {
       await this.dispararDisjuntor(
         `${alterados.length} outro(s) campo(s) mudaram ao gravar "Tipo de entrada" na negociação ${id}`,
       );
-      observacoes.push(`ALERTA: ${alterados.length} outro(s) campo(s) mudaram; gravação suspensa`);
+      throw new Error(`gravação suspensa: ${alterados.length} outro(s) campo(s) mudaram`);
     }
 
-    if (valorDoCampo(depois, this.cfg.campoTipoEntrada) !== tipo) {
-      throw erroAoGravar ?? new Error('o CRM não mostrou o valor gravado');
+    if (valorDoCampo(depois, this.cfg.campoTipoEntrada) === tipo) {
+      if (erroAoGravar) observacoes.push(`o CRM respondeu com erro, mas gravou (${mensagem(erroAoGravar)})`);
+      return { campo: 'gravado', depois };
     }
-    if (erroAoGravar) observacoes.push(`o CRM respondeu com erro, mas gravou (${mensagem(erroAoGravar)})`);
-    return depois;
+
+    // Não gravou. Erro temporário: tenta de novo na próxima rodada.
+    const temporario =
+      erroAoGravar !== null &&
+      (incerto || (erroAoGravar instanceof ErroCrm && erroAoGravar.status === 429));
+    if (temporario) throw erroAoGravar;
+    observacoes.push(
+      erroAoGravar ? `campo não gravado: ${mensagem(erroAoGravar)}` : 'o CRM aceitou, mas não mostrou o valor gravado',
+    );
+    return { campo: 'não gravado', depois };
   }
 
   private async criarTarefa(
@@ -719,10 +780,11 @@ export class Marcador {
       return 'não criada';
     }
 
-    // Só conta tarefa que é mesmo desta negociação
-    const existentes = (await this.api.tarefasDaNegociacao(id)).filter(
-      (t) => (t.deal_id ?? idDe(t.deal ?? null)) === id,
-    );
+    // Descarta só tarefa que diz ser de outra negociação; sem essa informação, conta como desta
+    const existentes = (await this.api.tarefasDaNegociacao(id)).filter((t) => {
+      const negociacaoDaTarefa = t.deal_id ?? idDe(t.deal ?? null);
+      return !negociacaoDaTarefa || negociacaoDaTarefa === id;
+    });
     if (existentes.some((t) => (t.subject ?? '').trim() === assunto)) return 'já existia';
 
     const campanha = negociacao.campaign?.name ?? null;

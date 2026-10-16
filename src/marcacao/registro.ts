@@ -35,25 +35,57 @@ export class Registro {
   private processadas = new Map<string, string>();
   private decisoes: Decisao[] = [];
   private _disjuntor: Disjuntor | null = null;
+  private fila: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly arquivo: string,
     private readonly avisar: (mensagem: string) => void = () => undefined,
   ) {}
 
+  /**
+   * Lê o registro. Sem arquivo é a primeira execução. Arquivo que existe mas
+   * não dá para ler: não há como saber se a gravação estava suspensa, então
+   * ela fica suspensa (uma cópia do arquivo é guardada para análise).
+   */
   async carregar(): Promise<void> {
+    let conteudo: string;
     try {
-      const dados = JSON.parse(await fs.readFile(this.arquivo, 'utf-8'));
-      if (Array.isArray(dados?.processadas)) this.processadas = new Map(dados.processadas);
-      if (Array.isArray(dados?.decisoes)) this.decisoes = dados.decisoes.slice(0, MAXIMO_DECISOES);
-      if (dados?.disjuntor && typeof dados.disjuntor.motivo === 'string') this._disjuntor = dados.disjuntor;
+      conteudo = await fs.readFile(this.arquivo, 'utf-8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return;
+      this.suspenderPorRegistroIlegivel();
+      return;
+    }
+    try {
+      const dados = JSON.parse(conteudo);
+      if (!dados || typeof dados !== 'object' || Array.isArray(dados)) throw new Error('formato inesperado');
+      if (Array.isArray(dados.processadas)) this.processadas = new Map(dados.processadas);
+      if (Array.isArray(dados.decisoes)) this.decisoes = dados.decisoes.slice(0, MAXIMO_DECISOES);
+      if (dados.disjuntor && typeof dados.disjuntor.motivo === 'string') this._disjuntor = dados.disjuntor;
     } catch {
-      // Primeira execução, ou arquivo ilegível: começa vazio
+      try {
+        await fs.copyFile(this.arquivo, `${this.arquivo}.ilegivel`);
+      } catch {
+        // sem cópia
+      }
+      this.suspenderPorRegistroIlegivel();
     }
   }
 
+  private suspenderPorRegistroIlegivel(): void {
+    this._disjuntor = { motivo: 'o registro da marcação em disco estava ilegível', em: new Date().toISOString() };
+    this.avisar('registro da marcação ilegível: gravação suspensa até liberar em POST /marcacao/religar');
+  }
+
+  /** Uma gravação de cada vez, para duas nunca usarem o mesmo arquivo temporário. */
+  salvar(): Promise<void> {
+    const minhaVez = this.fila.then(() => this.salvarAgora());
+    this.fila = minhaVez.catch(() => undefined);
+    return minhaVez;
+  }
+
   /** Grava em arquivo temporário e renomeia, para nunca deixar o registro pela metade. */
-  async salvar(): Promise<void> {
+  private async salvarAgora(): Promise<void> {
     const temporario = `${this.arquivo}.tmp`;
     try {
       const conteudo = JSON.stringify({

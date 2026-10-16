@@ -123,8 +123,13 @@ variáveis estão em `.env.example`.
 - Confere se a tarefa já existe antes de criar.
 - Depois de qualquer gravação, relê e confere se os outros campos
   continuam iguais. Se algum mudou, ou se não deu para conferir, para de
-  gravar. Essa parada fica guardada em disco e só é liberada por
-  `POST /marcacao/religar`, depois de conferir o CRM.
+  gravar. Essa parada fica guardada em disco (registro ilegível também
+  para) e só é liberada por `POST /marcacao/religar`, depois de conferir o
+  CRM. Enquanto está parada, nenhuma negociação é processada; depois da
+  liberação, tudo o que estiver nas últimas 24 h é visto.
+- Recusa definitiva do CRM ao gravar o campo (ex.: HTTP 422) fica
+  registrada, sem repetir, e a tarefa é criada assim mesmo. Erro de rede,
+  5xx, 429 ou resposta ilegível deixa a negociação para a próxima rodada.
 - Lead de teste (Funil de Testes) só é comparado com o Funil de Testes.
 - O token e os dados dos clientes não vão para o log.
 
